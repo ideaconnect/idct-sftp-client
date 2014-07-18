@@ -1,0 +1,36 @@
+{
+    "name": "idct/sftp-client",
+    "description": "Library that provides wrapper methods around SSH2 and SFTP to simplify file download/upload over SSH/SCP/SFTP.",
+    "type": "library",
+    "keywords": [
+        "sftp",
+        "ssh",
+        "ssh2",
+        "scp",
+        "idct"
+    ],
+    "homepage": "https://github.com/ideaconnect/idct-sftp-client",
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "Bartosz Pachołek",
+            "email": "bartosz@ideaconnect.pl",
+            "role": "lead"
+        }
+    ],
+    "support": {
+        "issues": "https://github.com/ideaconnect/idct-sft-client/issues"
+    },
+    "minimum-stability": "dev",
+    "require": {
+        "php": ">=5.3.0"
+    },
+    "autoload": {
+        "classmap": [
+            "src/"
+        ]
+    },
+    "include-path": [
+        ""
+    ]
+}
