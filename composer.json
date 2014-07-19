@@ -19,7 +19,7 @@
         }
     ],
     "support": {
-        "issues": "https://github.com/ideaconnect/idct-sft-client/issues"
+        "issues": "https://github.com/ideaconnect/idct-sftp-client/issues"
     },
     "minimum-stability": "dev",
     "require": {
