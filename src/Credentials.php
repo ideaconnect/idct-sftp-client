@@ -24,8 +24,8 @@ use \Exception as Exception;
  * OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-class Credentials {
-
+class Credentials
+{
     /**
      * Username for authorization to the server
      * @var string
@@ -70,8 +70,8 @@ class Credentials {
      *
      * @return self
      */
-    public function __construct() {
-
+    public function __construct()
+    {
         return $this;
     }
 
@@ -82,7 +82,8 @@ class Credentials {
      * @param string $password Authorization password
      * @return Credentials
      */
-    public static function withPassword($username, $password) {
+    public static function withPassword($username, $password)
+    {
         $instance = new self();
         $instance->setMode( AuthMode::PASSWORD );
         $instance->setUsername($username);
@@ -99,7 +100,8 @@ class Credentials {
      * @param string $passphrase Passphrase for Private key (if required)
      * @return Credentials
      */
-    public static function withPublicKey($username, $publicKey, $privateKey, $passphrase = null) {
+    public static function withPublicKey($username, $publicKey, $privateKey, $passphrase = null)
+    {
         $instance = new self();
         $instance->setMode( AuthMode::PUBLIC_KEY );
         $instance->setUsername($username);
@@ -117,7 +119,8 @@ class Credentials {
      * @throws Exception Public Key required for PUBLIC KEY mode!
      * @throws Exception Private Key required for PUBLIC KEY mode!
      */
-    protected function validateAgainstMode() {
+    protected function validateAgainstMode()
+    {
         switch($this->mode) {
             case (AuthMode::PASSWORD):
                 if($this->password === null) {
@@ -147,7 +150,8 @@ class Credentials {
      * @throws Exception Public Key required for PUBLIC KEY mode!
      * @throws Exception Private Key required for PUBLIC KEY mode!
      */
-    protected function validate() {
+    protected function validate()
+    {
         if($this->username === null) {
             throw new Exception("Username not set!");
         }
@@ -172,7 +176,8 @@ class Credentials {
      * @throws Exception Public Key required for PUBLIC KEY mode!
      * @throws Exception Private Key required for PUBLIC KEY mode!
      */
-    public function authorizeSshConnection($connectionResource) {
+    public function authorizeSshConnection($connectionResource)
+    {
         if($connectionResource === null || $connectionResource === false) {
             throw new Exception("Connected Ssh resource is required!");
         }
@@ -201,7 +206,8 @@ class Credentials {
      *
      * @param AuthMode::constants $mode
      */
-    public function setMode($mode) {
+    public function setMode($mode)
+    {
         $this->mode = $mode;
     }
 
@@ -209,7 +215,8 @@ class Credentials {
      * Gets the assigned authorization mode
      * @return AtuhMode::constants|null
      */
-    public function getMode() {
+    public function getMode()
+    {
         return $this->mode;
     }
 
@@ -220,7 +227,8 @@ class Credentials {
      * @return self
      * @throws Exception Username must be at least 1 character long!
      */
-    public function setUsername($username) {
+    public function setUsername($username)
+    {
         if(strlen($username) < 1) {
             throw new Exception("Username must be at least 1 character long!");
         }
@@ -234,7 +242,8 @@ class Credentials {
      *
      * @return string|null
      */
-    public function getUsername() {
+    public function getUsername()
+    {
         return $this->username;
     }
 
@@ -243,7 +252,8 @@ class Credentials {
      *
      * @param string $password
      */
-    public function setPassword($password) {
+    public function setPassword($password)
+    {
         //technically it can be an empty string
         $this->password = $password;
 
@@ -254,7 +264,8 @@ class Credentials {
      * Gets the assigned password
      * @return string|null
      */
-    public function getPassword() {
+    public function getPassword()
+    {
         return $this->password;
     }
 
@@ -265,7 +276,8 @@ class Credentials {
      * @return self
      * @throws Exception Public Key file does not exist!
      */
-    public function setPublicKey($path) {
+    public function setPublicKey($path)
+    {
         if(file_exists($path)) {
             throw new Exception("Public Key file does not exist!");
         }
@@ -279,7 +291,8 @@ class Credentials {
      *
      * @return string|null
      */
-    public function getPublicKey() {
+    public function getPublicKey()
+    {
         return $this->publicKey;
     }
 
@@ -291,7 +304,8 @@ class Credentials {
      * @return self
      * @throws Exception PrivateKey file does not exist!
      */
-    public function setPrivateKey($path, $passphrase = null) {
+    public function setPrivateKey($path, $passphrase = null)
+    {
         if(file_exists($path)) {
             throw new Exception("Private Key file does not exist");
         }
@@ -306,7 +320,8 @@ class Credentials {
      *
      * @return string|null
      */
-    public function getPrivateKeyPath() {
+    public function getPrivateKeyPath()
+    {
         return $this->privateKey;
     }
 
@@ -315,9 +330,8 @@ class Credentials {
      *
      * @return string|null
      */
-    public function getPrivateKeyPassphrase() {
+    public function getPrivateKeyPassphrase()
+    {
         return $this->privateKeyPassphrase;
     }
-
-
 }

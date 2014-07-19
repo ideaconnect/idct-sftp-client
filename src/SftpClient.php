@@ -26,8 +26,8 @@ use \Exception as Exception;
  * OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-class SftpClient {
-
+class SftpClient
+{
     /**
      * Credentials used for authorization of the connection
      *
@@ -81,7 +81,8 @@ class SftpClient {
      * @param \IDCT\Networking\Ssh\Credentials $credentials Credentials object used for authorization
      * @return self
      */
-    public function setCredentials(Credentials $credentials) {
+    public function setCredentials(Credentials $credentials)
+    {
         $this->credentials = $credentials;
 
         return $this;
@@ -102,8 +103,11 @@ class SftpClient {
      * @param string $prefix Prefix used for saving of files in the local file system
      * @return self
      */
-    public function setLocalPrefix($prefix) {
-        if(is_null($prefix)) $prefix = '';
+    public function setLocalPrefix($prefix)
+    {
+        if(is_null($prefix)) {
+            $prefix = '';
+        }
         $this->localPrefix = $prefix;
 
         return $this;
@@ -114,7 +118,8 @@ class SftpClient {
      *
      * @return string
      */
-    public function getLocalPrefix() {
+    public function getLocalPrefix()
+    {
         return $this->localPrefix;
     }
 
@@ -124,7 +129,8 @@ class SftpClient {
      * @param string $prefix
      * @return \IDCT\Networking\Ssh\SftpClient
      */
-    public function setRemotePrefix($prefix) {
+    public function setRemotePrefix($prefix)
+    {
         if(is_null($prefix)) $prefix = '';
         $this->remotePrefix = $prefix;
 
@@ -136,7 +142,8 @@ class SftpClient {
      *
      * @return string
      */
-    public function getRemotePrefix() {
+    public function getRemotePrefix()
+    {
         return $this->remotePrefix;
     }
 
@@ -146,7 +153,8 @@ class SftpClient {
      * @param resource $sftpResource
      * @return self
      */
-    protected function setSftpResource($sftpResource) {
+    protected function setSftpResource($sftpResource)
+    {
         $this->sftpResource = $sftpResource;
 
         return $this;
@@ -157,7 +165,8 @@ class SftpClient {
      *
      * @return sftpResource|null
      */
-    protected function getSftpResource() {
+    protected function getSftpResource()
+    {
         return $this->sftpResource;
     }
 
@@ -167,7 +176,8 @@ class SftpClient {
      * @param resource $sshResource
      * @return self
      */
-    protected function setSshResource($sshResource) {
+    protected function setSshResource($sshResource)
+    {
         $this->sshResource = $sshResource;
 
         return $this;
@@ -178,7 +188,8 @@ class SftpClient {
      *
      * @return self
      */
-    protected function getSshResource() {
+    protected function getSshResource()
+    {
         return $this->sshResource;
     }
 
@@ -221,7 +232,8 @@ class SftpClient {
      * @return self
      * @throws Exception Invalid connection resource!
      */
-    protected function validateSshResource() {
+    protected function validateSshResource()
+    {
         if($this->getSshResource() === false || $this->getSshResource() === null) {
             throw new Exception("Invalid connection resource!");
         }
@@ -235,7 +247,8 @@ class SftpClient {
      * @throws Exception Invalid connection resource! due to use of validateSshResource.
      * @return self
      */
-    public function close() {
+    public function close()
+    {
         $this->validateSshResource();
         ssh2_exec($this->getSshResource(), 'exit');
         $this->setSftpResource(null);
@@ -254,7 +267,8 @@ class SftpClient {
      * @throws Exception File does not exist or no permissions to read!
      * @throws Exception Could not download the file!
      */
-    public function download($remoteFilePath, $localFileName = null) {
+    public function download($remoteFilePath, $localFileName = null)
+    {
         $this->validateSshResource();
 
         if(ssh2_sftp_stat($this->getSftpResource(), $remoteFilePath) === false) {
@@ -289,7 +303,8 @@ class SftpClient {
      * @throws Exception File does not exist or no permissions to read!
      * @throws Exception Could not upload the file!
      */
-    public function upload($localFilePath, $remoteFileName = null) {
+    public function upload($localFilePath, $remoteFileName = null)
+    {
         $this->validateSshResource();
 
         if(stat($localFilePath) === false) {
@@ -313,5 +328,4 @@ class SftpClient {
 
         return $this;
     }
-
 }

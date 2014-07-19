@@ -24,10 +24,9 @@ use \Exception as Exception;
  * OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-class AuthMode {
-
+class AuthMode
+{
     const NONE = 0;
     const PASSWORD = 1;
     const PUBLIC_KEY = 2;
-
 }
