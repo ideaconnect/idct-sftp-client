@@ -1,5 +1,6 @@
 <?php
 namespace IDCT\Networking\Ssh;
+
 use \Exception as Exception;
 
 /**
