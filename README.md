@@ -3,6 +3,10 @@ idct-sftp-client
 
 Library that provides wrapper methods around SSH2, SCP and SFTP to simplify file download/upload over SSH/SCP/SFTP.
 
+warning
+=======
+I am still thinking about unification of download / upload methods by passing a paramter which would define the connection type therefore method names may change.
+
 example
 =======
 
