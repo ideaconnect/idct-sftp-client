@@ -356,6 +356,8 @@ class SftpClient
             $savePath .= $path['basename'];
         }
 
+        $sftp = $this->getSftpResource();
+
         // Remote stream
         if (!$remoteStream = @fopen("ssh2.sftp://$sftp/$remoteFilePath", 'r')) {
             throw new Exception("Unable to open remote file: $remoteFilePath");
@@ -384,5 +386,37 @@ class SftpClient
         fclose($remoteStream);
 
         return $this;
+    }
+
+    /**
+     * Gets the files list
+     *
+     * @param string $remotePath Remote directory path
+     * @return array List of files
+     * @throws Exception Invalid connection resource! due to use of validateSshResource.
+     * @throws Exception Folder does not exist or no permissions to read!
+     * @throws Exception Unable to open remote directory!
+     */
+    public function getFileList($remotePath)
+    {
+        $this->validateSshResource();
+        if(ssh2_sftp_stat($this->getSftpResource(), $remotePath) === false) {
+            throw new Exception("Folder does not exist or no permissions to read!");
+        }
+
+        $sftp = $this->getSftpResource();
+
+        $handle = opendir("ssh2.sftp://$sftp/$remotePath");
+        if($handle === false) {
+            throw new Exception("Unable to open remote directory!");
+        }
+
+        $files = array();
+
+        while (false != ($entry = readdir($handle))){
+            $files[] = $entry;
+        }
+
+        return $files;
     }
 }
