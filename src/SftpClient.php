@@ -389,6 +389,65 @@ class SftpClient
     }
 
     /**
+     * Attempts to upload a file using SFTP protocol
+     *
+     * @param string $localFilePath
+     * @param string $remoteFileName
+     * @return self
+     * @throws Exception Invalid connection resource! due to use of validateSshResource.
+     * @throws Exception File does not exist or no permissions to read!
+     * @throws Exception Could not upload the file!
+     */
+    public function upload($localFilePath, $remoteFileName = null)
+    {
+        $this->validateSshResource();
+
+        if(stat($localFilePath) === false) {
+            throw new Exception("File does not exist or no permissions to read!");
+        }
+
+        $savePath = $this->getRemotePrefix();
+
+        if(is_string($remoteFileName) === true) {
+            $savePath .= $remoteFileName;
+        } else {
+            $path = pathinfo($localFilePath);
+            $savePath .= $path['basename'];
+        }
+
+        $sftp = $this->getSftpResource();
+
+        // Local stream
+        if (!$localStream = @fopen($localFilePath, 'r')) {
+            throw new Exception("Unable to open local file for reading: $localFilePath");
+        }
+
+        // Remote stream
+        if (!$remoteStream = @fopen("ssh2.sftp://$sftp/$savePath", 'w')) {
+            throw new Exception("Unable to open remote file for writing: $savePath");
+        }
+
+        // Write from our remote stream to our local stream
+        $read = 0;
+        $fileSize = filesize($localFilePath);
+        while ($read < $fileSize && ($buffer = fread($localStream, $fileSize - $read))) {
+            // Increase our bytes read
+            $read += strlen($buffer);
+
+            // Write to our local file
+            if (fwrite($remoteStream, $buffer) === FALSE) {
+                throw new Exception("Unable to write to local file: $savePath");
+            }
+        }
+
+        // Close our streams
+        fclose($localStream);
+        fclose($remoteStream);
+
+        return $this;
+    }
+
+    /**
      * Gets the files list
      *
      * @param string $remotePath Remote directory path
