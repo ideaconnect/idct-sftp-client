@@ -259,7 +259,7 @@ class SftpClient
     }
 
     /**
-     * Attempts to download a file
+     * Attempts to download a file using SCP protocol
      *
      * @param string $remoteFilePath Remote file path. File must exist.
      * @param string $localFileName Local file name / path. If null then script will try to save in the working directory with the original basename.
@@ -268,7 +268,7 @@ class SftpClient
      * @throws Exception File does not exist or no permissions to read!
      * @throws Exception Could not download the file!
      */
-    public function download($remoteFilePath, $localFileName = null)
+    public function scpDownload($remoteFilePath, $localFileName = null)
     {
         $this->validateSshResource();
 
@@ -295,7 +295,7 @@ class SftpClient
     }
 
     /**
-     * Attempts to upload a file
+     * Attempts to upload a file using SCP protocol
      *
      * @param string $localFilePath
      * @param string $remoteFileName
@@ -304,7 +304,7 @@ class SftpClient
      * @throws Exception File does not exist or no permissions to read!
      * @throws Exception Could not upload the file!
      */
-    public function upload($localFilePath, $remoteFileName = null)
+    public function scpUpload($localFilePath, $remoteFileName = null)
     {
         $this->validateSshResource();
 
@@ -326,6 +326,62 @@ class SftpClient
         if($result === false) {
             throw new Exception("Could not upload the file!");
         }
+
+        return $this;
+    }
+
+    /**
+     * Attempts to download a file using SFTP protocol
+     *
+     * @param string $remoteFilePath Remote file path. File must exist.
+     * @param string $localFileName Local file name / path. If null then script will try to save in the working directory with the original basename.
+     * @return self
+     * @throws Exception Invalid connection resource! due to use of validateSshResource.
+     * @throws Unable to write to local file
+     */
+    public function download($remoteFilePath, $localFileName = null)
+    {
+        $this->validateSshResource();
+
+        if(ssh2_sftp_stat($this->getSftpResource(), $remoteFilePath) === false) {
+            throw new Exception("File does not exist or no permissions to read!");
+        }
+
+        $savePath = $this->getLocalPrefix();
+
+        if(is_string($localFileName) === true) {
+            $savePath .= $localFileName;
+        } else {
+            $path = pathinfo($remoteFilePath);
+            $savePath .= $path['basename'];
+        }
+
+        // Remote stream
+        if (!$remoteStream = @fopen("ssh2.sftp://$sftp/$remoteFilePath", 'r')) {
+            throw new Exception("Unable to open remote file: $remoteFilePath");
+        }
+
+        // Local stream
+        if (!$localStream = @fopen($savePath, 'w')) {
+            throw new Exception("Unable to open local file for writing: $savePath");
+        }
+
+        // Write from our remote stream to our local stream
+        $read = 0;
+        $fileSize = filesize("ssh2.sftp://$sftp/$remoteFilePath");
+        while ($read < $fileSize && ($buffer = fread($remoteStream, $fileSize - $read))) {
+            // Increase our bytes read
+            $read += strlen($buffer);
+
+            // Write to our local file
+            if (fwrite($localStream, $buffer) === FALSE) {
+                throw new Exception("Unable to write to local file: $savePath");
+            }
+        }
+
+        // Close our streams
+        fclose($localStream);
+        fclose($remoteStream);
 
         return $this;
     }

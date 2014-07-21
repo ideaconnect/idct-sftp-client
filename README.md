@@ -1,7 +1,7 @@
 idct-sftp-client
 ==================
 
-Library that provides wrapper methods around SSH2 and SFTP to simplify file download/upload over SSH/SCP/SFTP.
+Library that provides wrapper methods around SSH2, SCP and SFTP to simplify file download/upload over SSH/SCP/SFTP.
 
 example
 =======
@@ -24,7 +24,9 @@ $client->connect($host);
 $client->download(ENTER_REMOTE_FILE_NAME);
 $client->download(ENTER_REMOTE_FILE_NAME, ENTER_LOCAL_FILE_NAME);
 
-$client->upload(ENTER_LOCAL_FILE_NAME,ENTER_REMOTE_FILE_NAME);
+$client->scpDownload(ENTER_REMOTE_FILE_NAME);
+
+$client->scpUpload(ENTER_LOCAL_FILE_NAME,ENTER_REMOTE_FILE_NAME);
 
 $client->close();
 ````
