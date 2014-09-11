@@ -251,7 +251,7 @@ class SftpClient
     public function close()
     {
         $this->validateSshResource();
-        ssh2_exec($this->getSshResource(), 'exit');
+        @ssh2_exec($this->getSshResource(), 'exit');
         $this->setSftpResource(null);
         $this->setSshResource(null);
 
