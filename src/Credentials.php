@@ -198,7 +198,7 @@ class Credentials
             case (AuthMode::PASSWORD):
                 return ssh2_auth_password($connectionResource, $this->username, $this->password);
             case (AuthMode::PUBLIC_KEY):
-                return ssh2_auth_pubkey_file($connectionResource, $this->username, $this->publicKey-> $this->privateKey, $this->privateKeyPassphrase);
+                return ssh2_auth_pubkey_file($connectionResource, $this->username, $this->publicKey, $this->privateKey, $this->privateKeyPassphrase);
         }
     }
 
@@ -279,7 +279,7 @@ class Credentials
      */
     public function setPublicKey($path)
     {
-        if(file_exists($path)) {
+        if( ! file_exists($path)) {
             throw new Exception("Public Key file does not exist!");
         }
         $this->publicKey = $path;
@@ -307,7 +307,7 @@ class Credentials
      */
     public function setPrivateKey($path, $passphrase = null)
     {
-        if(file_exists($path)) {
+        if( ! file_exists($path)) {
             throw new Exception("Private Key file does not exist");
         }
         $this->privateKey = $path;
