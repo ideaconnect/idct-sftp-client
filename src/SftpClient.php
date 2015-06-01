@@ -459,7 +459,7 @@ class SftpClient
     {
         $this->validateSshResource();
 
-        if(ssh2_sftp_stat($this->getSftpResource(), $remoteFilePath) === false) {
+        if (ssh2_sftp_stat($this->getSftpResource(), $remoteFilePath) === false) {
             throw new Exception("File does not exist or no permissions to read!");
         }
 
