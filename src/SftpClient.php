@@ -448,14 +448,14 @@ class SftpClient
     }
 
     /**
-     * Attempts to remove a file using SFTP protocol
+     * Attempts to rename a file using SFTP protocol
      *
      * @param string $remoteFilePath Remote file path. File must exist.
      * @return self
      * @throws Exception Invalid connection resource! due to use of validateSshResource.
-     * @throws Exception Unable to remove remote file!.
+     * @throws Exception Unable to rename remote file!.
      */
-    public function remove($remoteFilePath)
+    public function rename($remoteFilePath, $newRemoteFilePath)
     {
         $this->validateSshResource();
 
@@ -463,8 +463,8 @@ class SftpClient
             throw new Exception("File does not exist or no permissions to read!");
         }
 
-        if (ssh2_sftp_unlink($this->getSftpResource(), $remoteFilePath) === false) {
-            throw new Exception("Unable to remove remote file!");
+        if (ssh2_sftp_rename($this->getSftpResource(), $remoteFilePath, $newRemoteFilePath) === false) {
+            throw new Exception("Unable to rename remote file!");
         }
 
         return $this;
