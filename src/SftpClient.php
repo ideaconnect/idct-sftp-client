@@ -359,7 +359,7 @@ class SftpClient
         $sftp = $this->getSftpResource();
 
         // Remote stream
-        if (!$remoteStream = @fopen("ssh2.sftp://$sftp/$remoteFilePath", 'r')) {
+        if (!$remoteStream = @fopen("ssh2.sftp://".intval($sftp)."/$remoteFilePath", 'r')) {
             throw new Exception("Unable to open remote file: $remoteFilePath");
         }
 
@@ -370,7 +370,7 @@ class SftpClient
 
         // Write from our remote stream to our local stream
         $read = 0;
-        $fileSize = filesize("ssh2.sftp://$sftp/$remoteFilePath");
+        $fileSize = filesize("ssh2.sftp://".intval($sftp)."/$remoteFilePath");
         while ($read < $fileSize && ($buffer = fread($remoteStream, $fileSize - $read))) {
             // Increase our bytes read
             $read += strlen($buffer);
@@ -423,7 +423,7 @@ class SftpClient
         }
 
         // Remote stream
-        if (!$remoteStream = @fopen("ssh2.sftp://$sftp/$savePath", 'w')) {
+        if (!$remoteStream = @fopen("ssh2.sftp://".intval($sftp)."/$savePath", 'w')) {
             throw new Exception("Unable to open remote file for writing: $savePath");
         }
 
@@ -511,7 +511,7 @@ class SftpClient
 
         $sftp = $this->getSftpResource();
 
-        $handle = opendir("ssh2.sftp://$sftp/$remotePath");
+        $handle = opendir("ssh2.sftp://".intval($sftp)."/$remotePath");
         if($handle === false) {
             throw new Exception("Unable to open remote directory!");
         }
