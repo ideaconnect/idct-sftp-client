@@ -112,6 +112,18 @@ class Credentials
         return $instance;
     }
 
+    public static function withBoth($username, $password, $publicKey, $privateKey, $passphrase = null)
+    {
+        $instance = new self();
+        $instance->setMode( AuthMode::BOTH );
+        $instance->setUsername($username);
+        $instance->setPassword($password);
+        $instance->setPublicKey($publicKey);
+        $instance->setPrivateKey($privateKey, $passphrase);
+
+        return $instance;
+    }
+
     /**
      * Checks if attributes required by current AuthMode ($mode) are set.
      *
@@ -122,23 +134,33 @@ class Credentials
      */
     protected function validateAgainstMode()
     {
-        switch($this->mode) {
-            case (AuthMode::PASSWORD):
-                if($this->password === null) {
-                    throw new Exception("Password required for PASSWORD mode!");
-                }
-                break;
-            case (AuthMode::PUBLIC_KEY):
-                if($this->publicKey === null) {
-                    throw new Exception("Public Key required for PUBLIC KEY mode!");
-                }
-                if($this->privateKey === null) {
-                    throw new Exception("Private Key required for PUBLIC KEY mode!");
-                }
-                break;
+        if ($this->needPassword() &&
+            $this->password === null
+        ) {
+            throw new Exception("Password required for PASSWORD mode!");
+        }
+
+        if ($this->needKeys()) {
+            if($this->publicKey === null) {
+                throw new Exception("Public Key required for BOTH mode!");
+            }
+
+            if($this->privateKey === null) {
+                throw new Exception("Private Key required for BOTH mode!");
+            }
         }
 
         return true;
+    }
+
+    protected function needPassword()
+    {
+        return $this->mode == AuthMode::PASSWORD || $this->mode == AuthMode::BOTH;
+    }
+
+    protected function needKeys()
+    {
+        return $this->mode == AuthMode::PUBLIC_KEY || $this->mode == AuthMode::BOTH;
     }
 
     /**
@@ -199,6 +221,9 @@ class Credentials
                 return ssh2_auth_password($connectionResource, $this->username, $this->password);
             case (AuthMode::PUBLIC_KEY):
                 return ssh2_auth_pubkey_file($connectionResource, $this->username, $this->publicKey, $this->privateKey, $this->privateKeyPassphrase);
+            case (AuthMode::BOTH):
+                @ssh2_auth_pubkey_file($connectionResource, $this->username, $this->publicKey, $this->privateKey, $this->privateKeyPassphrase);
+                return ssh2_auth_password($connectionResource, $this->username, $this->password);
         }
     }
 

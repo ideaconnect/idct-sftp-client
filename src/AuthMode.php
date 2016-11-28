@@ -30,4 +30,5 @@ class AuthMode
     const NONE = 0;
     const PASSWORD = 1;
     const PUBLIC_KEY = 2;
+    const BOTH = 3;
 }
