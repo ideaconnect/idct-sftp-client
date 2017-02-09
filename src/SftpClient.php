@@ -201,6 +201,8 @@ class SftpClient
             if ($port !== null && $port !== 22) {
                 $sftp .= ":" . $port;
             }
+
+            return $sftp;
         }
 
         return $this->sftpResource;
@@ -379,8 +381,8 @@ class SftpClient
     public function download($remoteFilePath, $localFileName = null)
     {
         $this->validateSshResource();
-
-        if (ssh2_sftp_stat($this->getSftpResource(), $remoteFilePath) === false) {
+        $sftp = $this->getSftpResource();
+        if (stat("ssh2.sftp://" . $sftp . "/" . $remoteFilePath) === false) {
             throw new Exception("File does not exist or no permissions to read!");
         }
 
@@ -393,7 +395,6 @@ class SftpClient
             $savePath .= $path['basename'];
         }
 
-        $sftp = $this->getSftpResource();
 
         // Remote stream
         if (!$remoteStream = @fopen("ssh2.sftp://$sftp/$remoteFilePath", 'r')) {
@@ -542,11 +543,10 @@ class SftpClient
     public function getFileList($remotePath)
     {
         $this->validateSshResource();
-        if (ssh2_sftp_stat($this->getSftpResource(), $remotePath) === false) {
+        $sftp = $this->getSftpResource();
+        if (stat("ssh2.sftp://" . $sftp . "/" . $remotePath) === false) {
             throw new Exception("Folder does not exist or no permissions to read!");
         }
-
-        $sftp = $this->getSftpResource();
 
         $handle = opendir("ssh2.sftp://$sftp/$remotePath");
         if ($handle === false) {
