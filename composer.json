@@ -26,11 +26,8 @@
         "php": ">=5.3.0"
     },
     "autoload": {
-        "classmap": [
-            "src/"
-        ]
-    },
-    "include-path": [
-        ""
-    ]
+        "psr-4": {
+            "IDCT\\Networking\\Ssh\\": "src/"
+        }
+    }
 }

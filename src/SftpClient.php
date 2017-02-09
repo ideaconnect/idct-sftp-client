@@ -63,13 +63,26 @@ class SftpClient
     protected $remotePrefix = ''; //with the trailing slash
 
     /**
+     * Host
+
+     * @var string
+     */
+    protected $host;
+
+    /**
+     * Port
+     * @var int
+     */
+    protected $port;
+
+    /**
      * Constructor
      *
      * Checks if ssh2 extension is loaded.
      */
     public function __construct()
     {
-        if ( !extension_loaded('ssh2') ) {
+        if (!extension_loaded('ssh2')) {
             throw new Exception('Ssh2 extension is not loaded!');
         }
 
@@ -94,7 +107,8 @@ class SftpClient
      *
      * @return \IDCT\Networking\Ssh\Credentials|null
      */
-    public function getCredentials() {
+    public function getCredentials()
+    {
         return $this->credentials;
     }
 
@@ -106,7 +120,7 @@ class SftpClient
      */
     public function setLocalPrefix($prefix)
     {
-        if(is_null($prefix)) {
+        if (is_null($prefix)) {
             $prefix = '';
         }
         $this->localPrefix = $prefix;
@@ -132,7 +146,9 @@ class SftpClient
      */
     public function setRemotePrefix($prefix)
     {
-        if(is_null($prefix)) $prefix = '';
+        if (is_null($prefix)) {
+            $prefix = '';
+        }
         $this->remotePrefix = $prefix;
 
         return $this;
@@ -168,6 +184,25 @@ class SftpClient
      */
     protected function getSftpResource()
     {
+        $credentials = $this->getCredentials();
+        //workaround for https://bugs.php.net/bug.php?id=71376
+        if ($credentials->getMode() === AuthMode::PASSWORD) {
+            $username = $credentials->getUsername();
+            $password = $credentials->getPassword();
+            $host = $this->host;
+            $port = $this->port;
+
+            $sftp = $username;
+            if (strlen($password) > 0) {
+                $sftp .= ":" . $password;
+            }
+
+            $sftp .= "@" . $host;
+            if ($port !== null && $port !== 22) {
+                $sftp .= ":" . $port;
+            }
+        }
+
         return $this->sftpResource;
     }
 
@@ -207,17 +242,19 @@ class SftpClient
      */
     public function connect($host, $port = 22)
     {
-        if(!($this->getCredentials() instanceof Credentials))
-        {
+        if (!($this->getCredentials() instanceof Credentials)) {
             throw new Exception('Valid credentials must be set!');
         }
 
+        $this->host = $host;
+        $this->port = $port;
+
         $sshConnection = ssh2_connect($host, $port);
-        if($sshConnection === false) {
+        if ($sshConnection === false) {
             throw new Exception("Could not connect!");
         }
 
-        if($this->getCredentials()->authorizeSshConnection($sshConnection) !== true) {
+        if ($this->getCredentials()->authorizeSshConnection($sshConnection) !== true) {
             throw new Exception("Could not authenticate!");
         }
 
@@ -235,7 +272,7 @@ class SftpClient
      */
     protected function validateSshResource()
     {
-        if($this->getSshResource() === false || $this->getSshResource() === null) {
+        if ($this->getSshResource() === false || $this->getSshResource() === null) {
             throw new Exception("Invalid connection resource!");
         }
 
@@ -272,13 +309,13 @@ class SftpClient
     {
         $this->validateSshResource();
 
-        if(ssh2_sftp_stat($this->getSftpResource(), $remoteFilePath) === false) {
+        if (ssh2_sftp_stat($this->getSftpResource(), $remoteFilePath) === false) {
             throw new Exception("File does not exist or no permissions to read!");
         }
 
         $savePath = $this->getLocalPrefix();
 
-        if(is_string($localFileName) === true) {
+        if (is_string($localFileName) === true) {
             $savePath .= $localFileName;
         } else {
             $path = pathinfo($remoteFilePath);
@@ -287,7 +324,7 @@ class SftpClient
 
         $result = ssh2_scp_recv($this->getSshResource(), $remoteFilePath, $savePath);
 
-        if($result === false) {
+        if ($result === false) {
             throw new Exception("Could not download the file!");
         }
 
@@ -308,13 +345,13 @@ class SftpClient
     {
         $this->validateSshResource();
 
-        if(stat($localFilePath) === false) {
+        if (stat($localFilePath) === false) {
             throw new Exception("File does not exist or no permissions to read!");
         }
 
         $savePath = $this->getRemotePrefix();
 
-        if(is_string($remoteFileName) === true) {
+        if (is_string($remoteFileName) === true) {
             $savePath .= $remoteFileName;
         } else {
             $path = pathinfo($localFilePath);
@@ -323,7 +360,7 @@ class SftpClient
 
         $result = ssh2_scp_send($this->getSshResource(), $localFilePath, $remoteFileName);
 
-        if($result === false) {
+        if ($result === false) {
             throw new Exception("Could not upload the file!");
         }
 
@@ -343,13 +380,13 @@ class SftpClient
     {
         $this->validateSshResource();
 
-        if(ssh2_sftp_stat($this->getSftpResource(), $remoteFilePath) === false) {
+        if (ssh2_sftp_stat($this->getSftpResource(), $remoteFilePath) === false) {
             throw new Exception("File does not exist or no permissions to read!");
         }
 
         $savePath = $this->getLocalPrefix();
 
-        if(is_string($localFileName) === true) {
+        if (is_string($localFileName) === true) {
             $savePath .= $localFileName;
         } else {
             $path = pathinfo($remoteFilePath);
@@ -376,7 +413,7 @@ class SftpClient
             $read += strlen($buffer);
 
             // Write to our local file
-            if (fwrite($localStream, $buffer) === FALSE) {
+            if (fwrite($localStream, $buffer) === false) {
                 throw new Exception("Unable to write to local file: $savePath");
             }
         }
@@ -402,13 +439,13 @@ class SftpClient
     {
         $this->validateSshResource();
 
-        if(stat($localFilePath) === false) {
+        if (stat($localFilePath) === false) {
             throw new Exception("File does not exist or no permissions to read!");
         }
 
         $savePath = $this->getRemotePrefix();
 
-        if(is_string($remoteFileName) === true) {
+        if (is_string($remoteFileName) === true) {
             $savePath .= $remoteFileName;
         } else {
             $path = pathinfo($localFilePath);
@@ -435,7 +472,7 @@ class SftpClient
             $read += strlen($buffer);
 
             // Write to our local file
-            if (fwrite($remoteStream, $buffer) === FALSE) {
+            if (fwrite($remoteStream, $buffer) === false) {
                 throw new Exception("Unable to write to local file: $savePath");
             }
         }
@@ -505,20 +542,20 @@ class SftpClient
     public function getFileList($remotePath)
     {
         $this->validateSshResource();
-        if(ssh2_sftp_stat($this->getSftpResource(), $remotePath) === false) {
+        if (ssh2_sftp_stat($this->getSftpResource(), $remotePath) === false) {
             throw new Exception("Folder does not exist or no permissions to read!");
         }
 
         $sftp = $this->getSftpResource();
 
         $handle = opendir("ssh2.sftp://$sftp/$remotePath");
-        if($handle === false) {
+        if ($handle === false) {
             throw new Exception("Unable to open remote directory!");
         }
 
         $files = array();
 
-        while (false != ($entry = readdir($handle))){
+        while (false != ($entry = readdir($handle))) {
             $files[] = $entry;
         }
 
