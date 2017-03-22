@@ -7,7 +7,7 @@ use \Exception as Exception;
  * SshCredentials for SftpClient
  *
  * @package SFTPClient
- * @version 1.0
+ * @version 0.3.1
  *
  * @copyright Bartosz Pachołek
  * @copyleft Bartosz pachołek
@@ -229,7 +229,8 @@ class Credentials
     /**
      * Sets the authorization mdoe
      *
-     * @param AuthMode::constants $mode
+     * @param int $mode Use AuthMode constants
+     * @todo use Enum
      */
     public function setMode($mode)
     {
@@ -238,7 +239,8 @@ class Credentials
 
     /**
      * Gets the assigned authorization mode
-     * @return AtuhMode::constants|null
+     * @return int|null Use AuthMode constants
+     * @todo use Enum
      */
     public function getMode()
     {

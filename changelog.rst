@@ -5,7 +5,9 @@ version 0.3.0 (2017-03-22)
 https://bugs.php.net/bug.php?id=71376
 Restored previous behavior with `intval` of SFTP Resource Handle.
 
-* Merged PR #6 by `pedrofornaza`
+* Merged PR #6 by `pedrofornaza`.
+
+* Initialized tests scope: with TODOs.
 
 version 0.2.0 (2017-02-09)
 ================
@@ -16,5 +18,5 @@ https://bugs.php.net/bug.php?id=71376
 version 0.1.0 (2014-08-16)
 ================
 
-* Packagist support
+* Packagist support.
 * Added changelog.rst

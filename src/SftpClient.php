@@ -180,7 +180,7 @@ class SftpClient
     /**
      * Gets the assigned resource used by all Sftp methods
      *
-     * @return sftpResource|null
+     * @return int|null
      */
     protected function getSftpResource()
     {
