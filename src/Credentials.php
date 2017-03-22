@@ -24,7 +24,6 @@ use \Exception as Exception;
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE
  * OR OTHER DEALINGS IN THE SOFTWARE.
  */
-
 class Credentials
 {
     /**
@@ -112,6 +111,18 @@ class Credentials
         return $instance;
     }
 
+    public static function withBoth($username, $password, $publicKey, $privateKey, $passphrase = null)
+    {
+        $instance = new self();
+        $instance->setMode( AuthMode::BOTH );
+        $instance->setUsername($username);
+        $instance->setPassword($password);
+        $instance->setPublicKey($publicKey);
+        $instance->setPrivateKey($privateKey, $passphrase);
+
+        return $instance;
+    }
+
     /**
      * Checks if attributes required by current AuthMode ($mode) are set.
      *
@@ -122,23 +133,33 @@ class Credentials
      */
     protected function validateAgainstMode()
     {
-        switch($this->mode) {
-            case (AuthMode::PASSWORD):
-                if($this->password === null) {
-                    throw new Exception("Password required for PASSWORD mode!");
-                }
-                break;
-            case (AuthMode::PUBLIC_KEY):
-                if($this->publicKey === null) {
-                    throw new Exception("Public Key required for PUBLIC KEY mode!");
-                }
-                if($this->privateKey === null) {
-                    throw new Exception("Private Key required for PUBLIC KEY mode!");
-                }
-                break;
+        if ($this->needPassword() &&
+            $this->password === null
+        ) {
+            throw new Exception("Password required for PASSWORD mode!");
+        }
+
+        if ($this->needKeys()) {
+            if ($this->publicKey === null) {
+                throw new Exception("Public Key required for BOTH mode!");
+            }
+
+            if ($this->privateKey === null) {
+                throw new Exception("Private Key required for BOTH mode!");
+            }
         }
 
         return true;
+    }
+
+    protected function needPassword()
+    {
+        return $this->mode == AuthMode::PASSWORD || $this->mode == AuthMode::BOTH;
+    }
+
+    protected function needKeys()
+    {
+        return $this->mode == AuthMode::PUBLIC_KEY || $this->mode == AuthMode::BOTH;
     }
 
     /**
@@ -153,11 +174,11 @@ class Credentials
      */
     protected function validate()
     {
-        if($this->username === null) {
+        if ($this->username === null) {
             throw new Exception("Username not set!");
         }
 
-        if(is_int($this->mode) === false) {
+        if (is_int($this->mode) === false) {
             throw new Exception("Mode not set!");
         }
 
@@ -179,17 +200,17 @@ class Credentials
      */
     public function authorizeSshConnection($connectionResource)
     {
-        if($connectionResource === null || $connectionResource === false) {
+        if ($connectionResource === null || $connectionResource === false) {
             throw new Exception("Connected Ssh resource is required!");
         }
 
         $this->validate();
 
         //passed the validation so we can really authorize the connection
-        switch($this->mode) {
+        switch ($this->mode) {
             case (AuthMode::NONE):
                 $authResult = ssh2_auth_none($connectionResource, $this->username);
-                if($authResult !== true) {
+                if ($authResult !== true) {
                     //we ignore here the fact of returning possible auth options: we want to authorize using this method. Full stop.
                     return false;
                 } else {
@@ -199,6 +220,9 @@ class Credentials
                 return ssh2_auth_password($connectionResource, $this->username, $this->password);
             case (AuthMode::PUBLIC_KEY):
                 return ssh2_auth_pubkey_file($connectionResource, $this->username, $this->publicKey, $this->privateKey, $this->privateKeyPassphrase);
+            case (AuthMode::BOTH):
+                @ssh2_auth_pubkey_file($connectionResource, $this->username, $this->publicKey, $this->privateKey, $this->privateKeyPassphrase);
+                return ssh2_auth_password($connectionResource, $this->username, $this->password);
         }
     }
 
@@ -230,7 +254,7 @@ class Credentials
      */
     public function setUsername($username)
     {
-        if(strlen($username) < 1) {
+        if (strlen($username) < 1) {
             throw new Exception("Username must be at least 1 character long!");
         }
         $this->username = $username;
@@ -279,7 +303,7 @@ class Credentials
      */
     public function setPublicKey($path)
     {
-        if( ! file_exists($path)) {
+        if (! file_exists($path)) {
             throw new Exception("Public Key file does not exist!");
         }
         $this->publicKey = $path;
@@ -307,7 +331,7 @@ class Credentials
      */
     public function setPrivateKey($path, $passphrase = null)
     {
-        if( ! file_exists($path)) {
+        if (! file_exists($path)) {
             throw new Exception("Private Key file does not exist");
         }
         $this->privateKey = $path;

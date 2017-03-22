@@ -26,7 +26,6 @@ use \Exception as Exception;
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE
  * OR OTHER DEALINGS IN THE SOFTWARE.
  */
-
 class SftpClient
 {
     /**
@@ -93,7 +92,7 @@ class SftpClient
      * Setter for the credentials used for authorization
      *
      * @param \IDCT\Networking\Ssh\Credentials $credentials Credentials object used for authorization
-     * @return self
+     * @return $this
      */
     public function setCredentials(Credentials $credentials)
     {
@@ -116,7 +115,7 @@ class SftpClient
      * Sets the prefix used for saving of files in the local file system
      *
      * @param string $prefix Prefix used for saving of files in the local file system
-     * @return self
+     * @return $this
      */
     public function setLocalPrefix($prefix)
     {
@@ -168,11 +167,12 @@ class SftpClient
      * Sets the resource created by ssh2_sftp used for all Sftp methods
      *
      * @param resource $sftpResource
-     * @return self
+     * @return $this
      */
     protected function setSftpResource($sftpResource)
     {
-        $this->sftpResource = $sftpResource;
+        //fix for https://bugs.php.net/bug.php?id=71376
+        $this->sftpResource = intval($sftpResource);
 
         return $this;
     }
@@ -184,27 +184,6 @@ class SftpClient
      */
     protected function getSftpResource()
     {
-        $credentials = $this->getCredentials();
-        //workaround for https://bugs.php.net/bug.php?id=71376
-        if ($credentials->getMode() === AuthMode::PASSWORD) {
-            $username = $credentials->getUsername();
-            $password = $credentials->getPassword();
-            $host = $this->host;
-            $port = $this->port;
-
-            $sftp = $username;
-            if (strlen($password) > 0) {
-                $sftp .= ":" . $password;
-            }
-
-            $sftp .= "@" . $host;
-            if ($port !== null && $port !== 22) {
-                $sftp .= ":" . $port;
-            }
-
-            return $sftp;
-        }
-
         return $this->sftpResource;
     }
 
@@ -212,7 +191,7 @@ class SftpClient
      * Sets the resource created by ssh2_connect used for all ssh methods
      *
      * @param resource $sshResource
-     * @return self
+     * @return $this
      */
     protected function setSshResource($sshResource)
     {
@@ -224,7 +203,7 @@ class SftpClient
     /**
      * Gets the assigned resource used by all ssh methods
      *
-     * @return self
+     * @return $this
      */
     protected function getSshResource()
     {
@@ -237,7 +216,7 @@ class SftpClient
      * @param string $host hostname
      * @param int $port port to connect on to the hostname
      *
-     * @return self
+     * @return $this
      * @throws Exception Valid credentials must be set!
      * @throws Exception Could not connect!
      * @throws Exception Could not authenticate!
@@ -269,7 +248,7 @@ class SftpClient
     /**
      * Checks if connection resources are assigned for further use
      *
-     * @return self
+     * @return $this
      * @throws Exception Invalid connection resource!
      */
     protected function validateSshResource()
@@ -285,7 +264,7 @@ class SftpClient
      * Closes the connection (calls 'exit') and removes the connection resources.
      *
      * @throws Exception Invalid connection resource! due to use of validateSshResource.
-     * @return self
+     * @return $this
      */
     public function close()
     {
@@ -302,7 +281,7 @@ class SftpClient
      *
      * @param string $remoteFilePath Remote file path. File must exist.
      * @param string $localFileName Local file name / path. If null then script will try to save in the working directory with the original basename.
-     * @return self
+     * @return $this
      * @throws Exception Invalid connection resource! due to use of validateSshResource.
      * @throws Exception File does not exist or no permissions to read!
      * @throws Exception Could not download the file!
@@ -338,7 +317,7 @@ class SftpClient
      *
      * @param string $localFilePath
      * @param string $remoteFileName
-     * @return self
+     * @return $this
      * @throws Exception Invalid connection resource! due to use of validateSshResource.
      * @throws Exception File does not exist or no permissions to read!
      * @throws Exception Could not upload the file!
@@ -374,7 +353,7 @@ class SftpClient
      *
      * @param string $remoteFilePath Remote file path. File must exist.
      * @param string $localFileName Local file name / path. If null then script will try to save in the working directory with the original basename.
-     * @return self
+     * @return $this
      * @throws Exception Invalid connection resource! due to use of validateSshResource.
      * @throws Unable to write to local file
      */
@@ -397,7 +376,7 @@ class SftpClient
 
 
         // Remote stream
-        if (!$remoteStream = @fopen("ssh2.sftp://$sftp/$remoteFilePath", 'r')) {
+        if (!$remoteStream = @fopen("ssh2.sftp://".($sftp)."/$remoteFilePath", 'r')) {
             throw new Exception("Unable to open remote file: $remoteFilePath");
         }
 
@@ -408,7 +387,7 @@ class SftpClient
 
         // Write from our remote stream to our local stream
         $read = 0;
-        $fileSize = filesize("ssh2.sftp://$sftp/$remoteFilePath");
+        $fileSize = filesize("ssh2.sftp://".($sftp)."/$remoteFilePath");
         while ($read < $fileSize && ($buffer = fread($remoteStream, $fileSize - $read))) {
             // Increase our bytes read
             $read += strlen($buffer);
@@ -431,7 +410,7 @@ class SftpClient
      *
      * @param string $localFilePath
      * @param string $remoteFileName
-     * @return self
+     * @return $this
      * @throws Exception Invalid connection resource! due to use of validateSshResource.
      * @throws Exception File does not exist or no permissions to read!
      * @throws Exception Could not upload the file!
@@ -453,26 +432,26 @@ class SftpClient
             $savePath .= $path['basename'];
         }
 
-        $sftp = $this->getSftpResource();
+            $sftp = $this->getSftpResource();
 
         // Local stream
         if (!$localStream = @fopen($localFilePath, 'r')) {
-            throw new Exception("Unable to open local file for reading: $localFilePath");
+                throw new Exception("Unable to open local file for reading: $localFilePath");
         }
 
         // Remote stream
-        if (!$remoteStream = @fopen("ssh2.sftp://$sftp/$savePath", 'w')) {
-            throw new Exception("Unable to open remote file for writing: $savePath");
+        if (!$remoteStream = @fopen("ssh2.sftp://".$sftp."/$savePath", 'w')) {
+                throw new Exception("Unable to open remote file for writing: $savePath");
         }
 
         // Write from our remote stream to our local stream
         $read = 0;
         $fileSize = filesize($localFilePath);
         while ($read < $fileSize && ($buffer = fread($localStream, $fileSize - $read))) {
-            // Increase our bytes read
-            $read += strlen($buffer);
+                // Increase our bytes read
+                $read += strlen($buffer);
 
-            // Write to our local file
+                // Write to our local file
             if (fwrite($remoteStream, $buffer) === false) {
                 throw new Exception("Unable to write to local file: $savePath");
             }
@@ -489,7 +468,7 @@ class SftpClient
      * Attempts to remove a file using SFTP protocol
      *
      * @param string $remoteFilePath Remote file path. File must exist.
-     * @return self
+     * @return $this
      * @throws Exception Invalid connection resource! due to use of validateSshResource.
      * @throws Exception Unable to remove remote file!.
      */
@@ -512,7 +491,7 @@ class SftpClient
      * Attempts to rename a file using SFTP protocol
      *
      * @param string $remoteFilePath Remote file path. File must exist.
-     * @return self
+     * @return $this
      * @throws Exception Invalid connection resource! due to use of validateSshResource.
      * @throws Exception Unable to rename remote file!.
      */
@@ -548,7 +527,7 @@ class SftpClient
             throw new Exception("Folder does not exist or no permissions to read!");
         }
 
-        $handle = opendir("ssh2.sftp://$sftp/$remotePath");
+        $handle = opendir("ssh2.sftp://".$sftp."/$remotePath");
         if ($handle === false) {
             throw new Exception("Unable to open remote directory!");
         }

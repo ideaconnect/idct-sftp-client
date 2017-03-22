@@ -24,10 +24,10 @@ use \Exception as Exception;
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE
  * OR OTHER DEALINGS IN THE SOFTWARE.
  */
-
 class AuthMode
 {
     const NONE = 0;
     const PASSWORD = 1;
     const PUBLIC_KEY = 2;
+    const BOTH = 3;
 }
