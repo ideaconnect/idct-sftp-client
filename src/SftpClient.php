@@ -31,20 +31,20 @@ class SftpClient
     /**
      * Credentials used for authorization of the connection
      *
-     * @var \IDCT\Networking\Ssh\Credentials
+     * @var Credentials
      */
     protected $credentials = null;
 
     /**
      * Sftp resource created by ssh2_sftp for use with all sftp methods
      *
-     * @var resource
+     * @var Resource
      */
     protected $sftpResource = null;
 
     /**
      * Ssh connection resource created by ssh2_connect for use with all ssh methods
-     * @var resource
+     * @var Resource
      */
     protected $sshResource = null;
 
@@ -62,8 +62,13 @@ class SftpClient
     protected $remotePrefix = ''; //with the trailing slash
 
     /**
-     * Host
+     * If enabled verifies each file for same file size.
+     * @var boolean
+     */
+    protected $fileSizeVerificationEnabled = false;
 
+    /**
+     * Host
      * @var string
      */
     protected $host;
@@ -79,19 +84,45 @@ class SftpClient
      *
      * Checks if ssh2 extension is loaded.
      */
-    public function __construct()
+    public function __construct($enableFileSizeVerification = false)
     {
         if (!extension_loaded('ssh2')) {
             throw new Exception('Ssh2 extension is not loaded!');
+        }
+
+        if ($enableFileSizeVerification) {
+            $this->enableFileSizeVerification();
         }
 
         return $this;
     }
 
     /**
+     * Enables file size verification.
+     *
+     * @return $this
+     */
+    public function enableFileSizeVerification()
+    {
+        $this->fileSizeVerificationEnabled = true;
+        return $this;
+    }
+
+    /**
+     * Disables file size verification.
+     *
+     * @return $this
+     */
+    public function disableFileSizeVerification()
+    {
+        $this->fileSizeVerificationEnabled = false;
+        return $this;
+    }
+
+    /**
      * Setter for the credentials used for authorization
      *
-     * @param \IDCT\Networking\Ssh\Credentials $credentials Credentials object used for authorization
+     * @param Credentials $credentials Credentials object used for authorization
      * @return $this
      */
     public function setCredentials(Credentials $credentials)
@@ -104,7 +135,7 @@ class SftpClient
     /**
      * Getter of assigned authorization credentials object
      *
-     * @return \IDCT\Networking\Ssh\Credentials|null
+     * @return Credentials|null
      */
     public function getCredentials()
     {
@@ -141,7 +172,7 @@ class SftpClient
      * Sets the prefix used for saving of files in the remote file system
      *
      * @param string $prefix
-     * @return \IDCT\Networking\Ssh\SftpClient
+     * @return $this
      */
     public function setRemotePrefix($prefix)
     {
@@ -339,7 +370,7 @@ class SftpClient
             $savePath .= $path['basename'];
         }
 
-        $result = ssh2_scp_send($this->getSshResource(), $localFilePath, $remoteFileName);
+        $result = ssh2_scp_send($this->getSshResource(), $localFilePath, $savePath);
 
         if ($result === false) {
             throw new Exception("Could not upload the file!");
@@ -402,6 +433,10 @@ class SftpClient
         fclose($localStream);
         fclose($remoteStream);
 
+        if ($this->fileSizeVerificationEnabled && $fileSize !== filesize($savePath)) {
+            throw new Exception("Different file size: " . $localFilePath);
+        }
+
         return $this;
     }
 
@@ -460,6 +495,10 @@ class SftpClient
         // Close our streams
         fclose($localStream);
         fclose($remoteStream);
+
+        if ($this->fileSizeVerificationEnabled && $fileSize !== filesize("ssh2.sftp://".$sftp."/$savePath")) {
+            throw new Exception("Different file size: " . $localFilePath);
+        }
 
         return $this;
     }
