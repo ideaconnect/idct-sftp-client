@@ -5,7 +5,7 @@ use IDCT\Networking\Ssh\Credentials;
 use \Exception as Exception;
 
 /**
- * FTP Client for PHP
+ * SFTP Client for PHP
  *
  * @package SftpClient
  * @version 1.0
