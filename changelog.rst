@@ -1,3 +1,9 @@
+version 0.3.2 (2017-03-26)
+================
+
+* Added file size verification, fixed prefixes usage, added directory management
+methods, added fileExists method.
+
 version 0.3.0 (2017-03-22)
 ================
 
