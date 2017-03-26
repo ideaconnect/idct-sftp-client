@@ -579,4 +579,28 @@ class SftpClient
 
         return $files;
     }
+
+    public function makeDirectory($path, $mode = 0777, $recursive = false)
+    {
+        $this->validateSshResource();
+        $sftp = $this->getSftpResource();
+        $result = ssh2_sftp_mkdir ( $sftp, $path, $mode, $recursive );
+        if ($result === false) {
+            throw new Exception("Unable to create remote directory!");
+        }
+
+        return $this;
+    }
+
+    public function deleteDirectory($path)
+    {
+        $this->validateSshResource();
+        $sftp = $this->getSftpResource();
+        $result = ssh2_sftp_rmdir ( $sftp, $path );
+        if ($result === false) {
+            throw new Exception("Unable to delete remote directory!");
+        }
+
+        return $this;
+    }
 }
