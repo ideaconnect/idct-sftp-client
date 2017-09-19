@@ -624,6 +624,14 @@ class SftpClient
         return $files;
     }
 
+    public function stat($remotePath)
+    {
+        $this->validateSshResource();
+        $sftp = $this->getSftpResource();
+        $sftp_int = intval($sftp);
+        return stat("ssh2.sftp://" . $sftp_int . "/" . $remotePath);
+    }
+
     /**
      * Creates remote directory.
      *
