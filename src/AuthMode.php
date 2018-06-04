@@ -1,7 +1,6 @@
 <?php
-namespace IDCT\Networking\Ssh;
 
-use \Exception as Exception;
+namespace IDCT\Networking\Ssh;
 
 /**
  * AuthMode for SftpClient

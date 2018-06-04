@@ -1,7 +1,8 @@
 <?php
+
 namespace IDCT\Networking\Ssh;
 
-use \Exception as Exception;
+use Exception as Exception;
 
 /**
  * SshCredentials for SftpClient
@@ -30,40 +31,40 @@ class Credentials
      * Username for authorization to the server
      * @var string
      */
-    protected $username = null;
+    protected $username;
 
     /**
      * Authorization password used in case of AuthMode::PUBLIC_KEY mode
      *
      * @var string
      */
-    protected $password = null;
+    protected $password;
 
     /**
      * Server authorization mode
      *
      * @var \IDCt\Networking\Ssh\AuthMode
      */
-    protected $mode = null;
+    protected $mode;
 
     /**
      * Public key file path - used in case of AuthMode::PUBLIC_KEY mode
      *
      * @var string
      */
-    protected $publicKey = null;
+    protected $publicKey;
 
     /**
      * Private key file path - used in case of AuthMode::PUBLIC_KEY mode
      * @var string
      */
-    protected $privateKey = null;
+    protected $privateKey;
 
     /**
      * Private key passphrase (if needed) - used in case of AuthMode::PUBLIC_KEY mode
      * @var string
      */
-    protected $privateKeyPassphrase = null;
+    protected $privateKeyPassphrase;
 
     /**
      * Constructor. Should not be really used. Check the static methods
@@ -85,7 +86,7 @@ class Credentials
     public static function withPassword($username, $password)
     {
         $instance = new self();
-        $instance->setMode( AuthMode::PASSWORD );
+        $instance->setMode(AuthMode::PASSWORD);
         $instance->setUsername($username);
         $instance->setPassword($password);
 
@@ -103,7 +104,7 @@ class Credentials
     public static function withPublicKey($username, $publicKey, $privateKey, $passphrase = null)
     {
         $instance = new self();
-        $instance->setMode( AuthMode::PUBLIC_KEY );
+        $instance->setMode(AuthMode::PUBLIC_KEY);
         $instance->setUsername($username);
         $instance->setPublicKey($publicKey);
         $instance->setPrivateKey($privateKey, $passphrase);
@@ -114,77 +115,13 @@ class Credentials
     public static function withBoth($username, $password, $publicKey, $privateKey, $passphrase = null)
     {
         $instance = new self();
-        $instance->setMode( AuthMode::BOTH );
+        $instance->setMode(AuthMode::BOTH);
         $instance->setUsername($username);
         $instance->setPassword($password);
         $instance->setPublicKey($publicKey);
         $instance->setPrivateKey($privateKey, $passphrase);
 
         return $instance;
-    }
-
-    /**
-     * Checks if attributes required by current AuthMode ($mode) are set.
-     *
-     * @return boolean Returns true on success.
-     * @throws Exception Password required for PASSWORD mode!
-     * @throws Exception Public Key required for PUBLIC KEY mode!
-     * @throws Exception Private Key required for PUBLIC KEY mode!
-     */
-    protected function validateAgainstMode()
-    {
-        if ($this->needPassword() &&
-            $this->password === null
-        ) {
-            throw new Exception("Password required for PASSWORD mode!");
-        }
-
-        if ($this->needKeys()) {
-            if ($this->publicKey === null) {
-                throw new Exception("Public Key required for BOTH mode!");
-            }
-
-            if ($this->privateKey === null) {
-                throw new Exception("Private Key required for BOTH mode!");
-            }
-        }
-
-        return true;
-    }
-
-    protected function needPassword()
-    {
-        return $this->mode == AuthMode::PASSWORD || $this->mode == AuthMode::BOTH;
-    }
-
-    protected function needKeys()
-    {
-        return $this->mode == AuthMode::PUBLIC_KEY || $this->mode == AuthMode::BOTH;
-    }
-
-    /**
-     * Checks if everything is set for authorization
-     *
-     * @return boolean Returns true on success
-     * @throws Exception Username not set!
-     * @throws Exception Mode not set!
-     * @throws Exception Password required for PASSWORD mode!
-     * @throws Exception Public Key required for PUBLIC KEY mode!
-     * @throws Exception Private Key required for PUBLIC KEY mode!
-     */
-    protected function validate()
-    {
-        if ($this->username === null) {
-            throw new Exception("Username not set!");
-        }
-
-        if (is_int($this->mode) === false) {
-            throw new Exception("Mode not set!");
-        }
-
-        $this->validateAgainstMode();
-
-        return true;
     }
 
     /**
@@ -216,12 +153,14 @@ class Credentials
                 } else {
                     return true;
                 }
+                // no break
             case (AuthMode::PASSWORD):
                 return ssh2_auth_password($connectionResource, $this->username, $this->password);
             case (AuthMode::PUBLIC_KEY):
                 return ssh2_auth_pubkey_file($connectionResource, $this->username, $this->publicKey, $this->privateKey, $this->privateKeyPassphrase);
             case (AuthMode::BOTH):
                 @ssh2_auth_pubkey_file($connectionResource, $this->username, $this->publicKey, $this->privateKey, $this->privateKeyPassphrase);
+
                 return ssh2_auth_password($connectionResource, $this->username, $this->password);
         }
     }
@@ -360,5 +299,69 @@ class Credentials
     public function getPrivateKeyPassphrase()
     {
         return $this->privateKeyPassphrase;
+    }
+
+    /**
+     * Checks if attributes required by current AuthMode ($mode) are set.
+     *
+     * @return boolean Returns true on success.
+     * @throws Exception Password required for PASSWORD mode!
+     * @throws Exception Public Key required for PUBLIC KEY mode!
+     * @throws Exception Private Key required for PUBLIC KEY mode!
+     */
+    protected function validateAgainstMode()
+    {
+        if ($this->needPassword() &&
+            $this->password === null
+        ) {
+            throw new Exception("Password required for PASSWORD mode!");
+        }
+
+        if ($this->needKeys()) {
+            if ($this->publicKey === null) {
+                throw new Exception("Public Key required for BOTH mode!");
+            }
+
+            if ($this->privateKey === null) {
+                throw new Exception("Private Key required for BOTH mode!");
+            }
+        }
+
+        return true;
+    }
+
+    protected function needPassword()
+    {
+        return $this->mode == AuthMode::PASSWORD || $this->mode == AuthMode::BOTH;
+    }
+
+    protected function needKeys()
+    {
+        return $this->mode == AuthMode::PUBLIC_KEY || $this->mode == AuthMode::BOTH;
+    }
+
+    /**
+     * Checks if everything is set for authorization
+     *
+     * @return boolean Returns true on success
+     * @throws Exception Username not set!
+     * @throws Exception Mode not set!
+     * @throws Exception Password required for PASSWORD mode!
+     * @throws Exception Public Key required for PUBLIC KEY mode!
+     * @throws Exception Private Key required for PUBLIC KEY mode!
+     */
+    protected function validate()
+    {
+        if ($this->username === null) {
+            throw new Exception("Username not set!");
+        }
+
+        if (is_int($this->mode) === false) {
+            throw new Exception("Mode not set!");
+        }
+
+        $this->validateAgainstMode();
+
+        return true;
     }
 }

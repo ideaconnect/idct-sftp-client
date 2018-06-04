@@ -14,7 +14,7 @@
     "authors": [
         {
             "name": "Bartosz Pachołek",
-            "email": "bartosz@ideaconnect.pl",
+            "email": "bartosz@idct.pl",
             "role": "lead"
         }
     ],
@@ -23,10 +23,16 @@
     },
     "minimum-stability": "dev",
     "require": {
-        "php": ">=5.3.0",
+        "php": ">=5.4.0",
         "ext-ssh2": ">=0.12"
     },
+    "require-dev": {
+        "FriendsOfPHP/php-cs-fixer": "^2.11"
+    },
     "autoload": {
+        "classmap": [
+            "src/"
+        ],
         "psr-4": {
             "IDCT\\Networking\\Ssh\\": "src/"
         }

@@ -1,8 +1,8 @@
 <?php
+
 namespace IDCT\Networking\Ssh;
 
-use IDCT\Networking\Ssh\Credentials;
-use \Exception as Exception;
+use Exception as Exception;
 
 /**
  * SFTP Client for PHP
@@ -33,21 +33,21 @@ class SftpClient
      *
      * @var Credentials
      */
-    protected $credentials = null;
+    protected $credentials;
 
     /**
      * Sftp resource created by ssh2_sftp for use with all sftp methods.
      *
      * @var Resource
      */
-    protected $sftpResource = null;
+    protected $sftpResource;
 
     /**
      * Ssh connection resource created by ssh2_connect for use with all ssh methods.
      *
      * @var Resource
      */
-    protected $sshResource = null;
+    protected $sshResource;
 
     /**
      * Path prefix used for saving in the local file system.
@@ -104,6 +104,11 @@ class SftpClient
         return $this;
     }
 
+    public function __destruct()
+    {
+        $this->Close();
+    }
+
     /**
      * Enables file size verification.
      *
@@ -112,6 +117,7 @@ class SftpClient
     public function enableFileSizeVerification()
     {
         $this->fileSizeVerificationEnabled = true;
+
         return $this;
     }
 
@@ -123,6 +129,7 @@ class SftpClient
     public function disableFileSizeVerification()
     {
         $this->fileSizeVerificationEnabled = false;
+
         return $this;
     }
 
@@ -210,53 +217,6 @@ class SftpClient
     }
 
     /**
-     * Sets the resource created by ssh2_sftp used for all Sftp methods.
-     *
-     * @param resource $sftpResource
-     * @return $this
-     */
-    protected function setSftpResource($sftpResource)
-    {
-        //fix for https://bugs.php.net/bug.php?id=71376
-        $this->sftpResource = $sftpResource;
-
-        return $this;
-    }
-
-    /**
-     * Gets the assigned resource used by all Sftp methods.
-     *
-     * @return int|null
-     */
-    protected function getSftpResource()
-    {
-        return $this->sftpResource;
-    }
-
-    /**
-     * Sets the resource created by ssh2_connect used for all ssh methods.
-     *
-     * @param resource $sshResource
-     * @return $this
-     */
-    protected function setSshResource($sshResource)
-    {
-        $this->sshResource = $sshResource;
-
-        return $this;
-    }
-
-    /**
-     * Gets the assigned resource used by all ssh methods.
-     *
-     * @return $this
-     */
-    protected function getSshResource()
-    {
-        return $this->sshResource;
-    }
-
-    /**
      * Opens the SSH2 and SFTP connection to the given hostname on given port.
      * Requires Credentials to be assigned before.
      *
@@ -293,21 +253,6 @@ class SftpClient
     }
 
     /**
-     * Checks if connection resources are assigned for further use
-     *
-     * @return $this
-     * @throws Exception Invalid connection resource!
-     */
-    protected function validateSshResource()
-    {
-        if ($this->getSshResource() === false || $this->getSshResource() === null) {
-            throw new Exception("Invalid connection resource!");
-        }
-
-        return $this;
-    }
-
-    /**
      * Closes the connection (calls 'exit') and removes the connection resources.
      *
      * @throws Exception Invalid connection resource! due to use of validateSshResource.
@@ -323,11 +268,6 @@ class SftpClient
         }
 
         return $this;
-    }
-
-    public function __destruct()
-    {
-        $this->Close();
     }
 
     /**
@@ -503,22 +443,22 @@ class SftpClient
 
         // Local stream
         if (!$localStream = @fopen($localFilePath, 'r')) {
-                throw new Exception("Unable to open local file for reading: $localFilePath");
+            throw new Exception("Unable to open local file for reading: $localFilePath");
         }
 
         // Remote stream
         if (!$remoteStream = @fopen("ssh2.sftp://".$sftp_int."/$savePath", 'w')) {
-                throw new Exception("Unable to open remote file for writing: $savePath");
+            throw new Exception("Unable to open remote file for writing: $savePath");
         }
 
         // Write from our remote stream to our local stream
         $read = 0;
         $fileSize = filesize($localFilePath);
         while ($read < $fileSize && ($buffer = fread($localStream, $fileSize - $read))) {
-                // Increase our bytes read
-                $read += strlen($buffer);
+            // Increase our bytes read
+            $read += strlen($buffer);
 
-                // Write to our local file
+            // Write to our local file
             if (fwrite($remoteStream, $buffer) === false) {
                 throw new Exception("Unable to write to local file: $savePath");
             }
@@ -613,7 +553,7 @@ class SftpClient
             throw new Exception("Unable to open remote directory!");
         }
 
-        $files = array();
+        $files = [];
 
         while (false != ($entry = readdir($handle))) {
             $files[] = $entry;
@@ -624,11 +564,23 @@ class SftpClient
         return $files;
     }
 
+    /**
+     * Gives information about a file.
+     *
+     * Check stat's return array format here:
+     * http://php.net/manual/en/function.stat.php
+     *
+     * @throws Exception Invalid connection resource! due to use of
+     * validateSshResource.
+     * @param string $remotePath
+     * @return mixed[string]
+     */
     public function stat($remotePath)
     {
         $this->validateSshResource();
         $sftp = $this->getSftpResource();
         $sftp_int = intval($sftp);
+
         return stat("ssh2.sftp://" . $sftp_int . "/" . $remotePath);
     }
 
@@ -645,7 +597,7 @@ class SftpClient
         $this->validateSshResource();
         $sftp = $this->getSftpResource();
 
-        $result = ssh2_sftp_mkdir (  $sftp, $path, $mode, $recursive );
+        $result = ssh2_sftp_mkdir($sftp, $path, $mode, $recursive);
         if ($result === false) {
             throw new Exception("Unable to create remote directory! (" . $path . ")");
         }
@@ -665,7 +617,7 @@ class SftpClient
         $this->validateSshResource();
         $sftp = $this->getSftpResource();
 
-        $result = ssh2_sftp_rmdir ( $sftp, $path );
+        $result = ssh2_sftp_rmdir($sftp, $path);
         if ($result === false) {
             throw new Exception("Unable to delete remote directory!");
         }
@@ -684,6 +636,69 @@ class SftpClient
         $this->validateSshResource();
         $sftp = $this->getSftpResource();
         $sftp_int = intval($sftp);
+
         return file_exists("ssh2.sftp://" . $sftp_int . "/" . $path);
+    }
+
+    /**
+     * Sets the resource created by ssh2_sftp used for all Sftp methods.
+     *
+     * @param resource $sftpResource
+     * @return $this
+     */
+    protected function setSftpResource($sftpResource)
+    {
+        //fix for https://bugs.php.net/bug.php?id=71376
+        $this->sftpResource = $sftpResource;
+
+        return $this;
+    }
+
+    /**
+     * Gets the assigned resource used by all Sftp methods.
+     *
+     * @return int|null
+     */
+    protected function getSftpResource()
+    {
+        return $this->sftpResource;
+    }
+
+    /**
+     * Sets the resource created by ssh2_connect used for all ssh methods.
+     *
+     * @param resource $sshResource
+     * @return $this
+     */
+    protected function setSshResource($sshResource)
+    {
+        $this->sshResource = $sshResource;
+
+        return $this;
+    }
+
+    /**
+     * Gets the assigned resource used by all ssh methods.
+     *
+     * @return $this
+     */
+    protected function getSshResource()
+    {
+        return $this->sshResource;
+    }
+
+    /**
+     * Checks if connection resources are assigned for further use
+     *
+     * @return $this
+     * @throws Exception Invalid connection resource!
+     */
+    protected function validateSshResource()
+    {
+        if ($this->getSshResource() === false || $this->getSshResource() === null) {
+            throw new Exception("Invalid connection resource!");
+        }
+
+        return $this;
     }
 }
