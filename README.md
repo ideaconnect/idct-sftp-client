@@ -14,7 +14,7 @@ installation
 
 Depending on your project include the files directly or use autoloader.
 
-# Direct usage
+## Direct usage
 
 Just include all the required files:
 
@@ -24,7 +24,7 @@ include "/path/to/idct/sftp-client/src/Credentials.php";
 include "/path/to/idct/sftp-client/src/SftpClient.php";
 ```
 
-# Composer
+## Composer
 
 Just execute:
 
@@ -39,7 +39,8 @@ autoloader:
 include "vendor/autload.php";
 ```
 
-# Usage
+usage
+=====
 
 After you have installed the project import required classes in your project:
 
