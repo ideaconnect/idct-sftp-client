@@ -14,7 +14,7 @@ installation
 
 Depending on your project include the files directly or use autoloader.
 
-## Direct usage
+### Direct usage
 
 Just include all the required files:
 
@@ -24,7 +24,7 @@ include "/path/to/idct/sftp-client/src/Credentials.php";
 include "/path/to/idct/sftp-client/src/SftpClient.php";
 ```
 
-## Composer
+### Composer
 
 Just execute:
 
@@ -57,14 +57,14 @@ $client = new SftpClient();
 
 Create authorization mode to your SFTP server:
 
-## When you have username and password:
+### When you have username and password:
 
 ```php
 $credentials = Credentials::withPassword($username, $password);
 $client->setCredentials($credentials);
 ```
 
-## When you have public key:
+### When you have public key:
 
 ```php
 $credentials = Credentials::withPublicKey($username, $publicKey, $privateKey, $passphrase = null);
@@ -73,50 +73,50 @@ $client->setCredentials($credentials);
 
 `$publicKey` and `$privateKey` are paths to respective files.
 
-## Connect to the server
+### Connect to the server
 
 ```php
 $client->connect($host);
 ```
 
 
-## Downloading using SFTP:
+### Downloading using SFTP:
 
 ```php
 $client->download(ENTER_REMOTE_FILE_NAME);
 $client->download(ENTER_REMOTE_FILE_NAME, ENTER_LOCAL_FILE_NAME);
 ```
 
-## Uploading using SFTP:
+### Uploading using SFTP:
 
 ```php
 $client->upload(ENTER_LOCAL_FILE_NAME);
 $client->upload(ENTER_LOCAL_FILE_NAME, ENTER_REMOTE_FILE_NAME);
 ```
 
-## Downloading using SCP:
+### Downloading using SCP:
 ```php
 $client->scpDownload(ENTER_REMOTE_FILE_NAME);
 ```
 
-## Uploading using SCP:
+### Uploading using SCP:
 ```php
 $client->scpUpload(ENTER_LOCAL_FILE_NAME,ENTER_REMOTE_FILE_NAME);
 ```
 
-## Closing connection:
+### Closing connection:
 
 ```php
 $client->close();
 ```
 
-## Remote prefix, local prefix
+### Remote prefix, local prefix
 
 Prefixes set using methods: `setRemotePrefix` and `setLocalPrefix` allow to set
 common directories for storage. Please follow phpDoc of respective upload/download
 methods to know when
 
-Contribution
+contribution
 ============
 
 If you find any issues or want to add new features please use the Issues or Pull
