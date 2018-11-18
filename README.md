@@ -36,7 +36,7 @@ which will create `vendor` folder with `idct/sftp-client`. Then just include the
 autoloader:
 
 ```php
-include "vendor/autload.php";
+include "vendor/autoload.php";
 ```
 
 usage
