@@ -262,7 +262,7 @@ class SftpClient
     {
         if ($this->getSshResource()) {
             $this->validateSshResource();
-            ssh2_exec($this->getSshResource(), 'logout');
+            ssh2_disconnect($this->getSshResource());
             $this->setSftpResource(null);
             $this->setSshResource(null);
         }
