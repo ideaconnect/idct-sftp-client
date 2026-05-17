@@ -1,0 +1,13 @@
+default:
+    autoload:
+        '': '%paths.base%/tests/functional/bootstrap'
+    suites:
+        default:
+            paths:
+                - '%paths.base%/tests/functional/features'
+            contexts:
+                - IDCT\Networking\Ssh\Tests\Functional\SftpContext
+    extensions: []
+    formatters:
+        pretty:
+            verbose: true

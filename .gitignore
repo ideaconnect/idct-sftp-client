@@ -1,1 +1,9 @@
 vendor/
+composer.lock
+var/
+build/
+.phpunit.cache
+.phpunit.result.cache
+.php-cs-fixer.cache
+.phpstan.result.cache
+infection.log

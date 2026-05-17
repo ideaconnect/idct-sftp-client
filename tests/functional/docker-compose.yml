@@ -1,0 +1,20 @@
+services:
+  sftp:
+    image: atmoz/sftp:alpine
+    container_name: idct-sftp-fixture
+    ports:
+      - "127.0.0.1:2222:22"
+    volumes:
+      - ./fixtures/keys/id_rsa.pub:/home/tester/.ssh/keys/id_rsa.pub:ro
+      - ./fixtures/sftp.d/chown.sh:/etc/sftp.d/chown.sh:ro
+      - sftp_data:/home/tester/data
+    # user:pass:e:uid:gid — :1001 places user with uid 1001
+    command: tester:testerpass:1001
+    healthcheck:
+      test: ["CMD", "sh", "-c", "nc -z localhost 22"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+volumes:
+  sftp_data:

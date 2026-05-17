@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Bring up the dockerised SFTP fixture and generate a pubkey if missing.
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+if [[ ! -f fixtures/keys/id_rsa ]]; then
+  echo "Generating fixture SSH keypair..."
+  ssh-keygen -t rsa -b 2048 -N "" -f fixtures/keys/id_rsa -C "idct-sftp-fixture" >/dev/null
+fi
+
+docker compose up -d --wait
+echo "SFTP fixture up on 127.0.0.1:2222 (user=tester pass=testerpass)."

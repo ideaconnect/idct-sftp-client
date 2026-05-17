@@ -1,6 +1,6 @@
 {
     "name": "idct/sftp-client",
-    "description": "Library that provides wrapper methods around SSH2 and SFTP to simplify file download/upload over SSH/SCP/SFTP.",
+    "description": "Typed PHP 8.2+ wrapper around ext-ssh2 that simplifies file upload/download over SSH/SCP/SFTP.",
     "type": "library",
     "keywords": [
         "sftp",
@@ -14,27 +14,64 @@
     "authors": [
         {
             "name": "Bartosz Pachołek",
-            "email": "bartosz@idct.pl",
+            "email": "bartosz@idct.tech",
             "role": "lead"
         }
     ],
     "support": {
         "issues": "https://github.com/ideaconnect/idct-sftp-client/issues"
     },
-    "minimum-stability": "dev",
     "require": {
-        "php": ">=5.4.0",
-        "ext-ssh2": ">=0.12"
+        "php": ">=8.2",
+        "ext-ssh2": ">=1.4",
+        "psr/log": "^3.0"
+    },
+    "require-dev": {
+        "behat/behat": "^3.14",
+        "friendsofphp/php-cs-fixer": "^3.64",
+        "infection/infection": "^0.29",
+        "phpstan/phpstan": "^2.0",
+        "phpstan/phpstan-phpunit": "^2.0",
+        "phpstan/phpstan-strict-rules": "^2.0",
+        "phpunit/phpunit": "^11.0 || ^12.0",
+        "rector/rector": "^2.0"
     },
     "autoload": {
-        "classmap": [
-            "src/"
-        ],
         "psr-4": {
             "IDCT\\Networking\\Ssh\\": "src/"
         }
     },
-    "require-dev": {
-        "friendsofphp/php-cs-fixer": "^2"
+    "autoload-dev": {
+        "psr-4": {
+            "IDCT\\Networking\\Ssh\\Tests\\": "tests/unit/",
+            "IDCT\\Networking\\Ssh\\Tests\\Functional\\": "tests/functional/bootstrap/"
+        }
+    },
+    "suggest": {
+        "monolog/monolog": "Plug in your favourite PSR-3 logger to capture connect/transfer/auth events (every record carries a correlation_id + host/port)."
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true,
+    "config": {
+        "sort-packages": true,
+        "allow-plugins": {
+            "infection/extension-installer": true
+        },
+        "platform": {
+            "php": "8.2.0"
+        }
+    },
+    "scripts": {
+        "cs": "php-cs-fixer fix --dry-run --diff",
+        "cs-fix": "php-cs-fixer fix",
+        "stan": "phpstan analyse --memory-limit=512M",
+        "test": "phpunit",
+        "behat": "behat",
+        "rector": "rector process --dry-run",
+        "qa": [
+            "@cs",
+            "@stan",
+            "@test"
+        ]
     }
 }

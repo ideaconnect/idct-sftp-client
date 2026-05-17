@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<phpunit xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="vendor/phpunit/phpunit/phpunit.xsd" bootstrap="vendor/autoload.php" colors="true" cacheDirectory="var/phpunit" executionOrder="random" resolveDependencies="true" failOnWarning="true" failOnRisky="true" failOnDeprecation="true" failOnNotice="true" beStrictAboutOutputDuringTests="true" beStrictAboutChangesToGlobalState="true" beStrictAboutCoverageMetadata="true">
+  <testsuites>
+    <testsuite name="unit">
+      <directory>tests/unit</directory>
+    </testsuite>
+  </testsuites>
+  <source restrictNotices="true" restrictWarnings="true" ignoreIndirectDeprecations="true">
+    <include>
+      <directory>src</directory>
+    </include>
+    <exclude>
+      <!-- Thin one-line delegations to ssh2_*. Exercised end-to-end by the Behat suite
+           against a real SFTP server (tests/functional). Excluded from the unit-test
+           coverage gate; lifting requires a live ext-ssh2 connection. -->
+      <file>src/Ssh2/Ssh2Functions.php</file>
+    </exclude>
+  </source>
+  <coverage pathCoverage="true">
+    <report>
+      <clover outputFile="build/coverage/clover.xml"/>
+      <html outputDirectory="build/coverage/html"/>
+      <text outputFile="php://stdout" showOnlySummary="true"/>
+    </report>
+  </coverage>
+  <php>
+    <ini name="error_reporting" value="-1"/>
+    <env name="XDEBUG_MODE" value="coverage"/>
+  </php>
+</phpunit>

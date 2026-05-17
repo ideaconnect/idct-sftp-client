@@ -1,36 +1,317 @@
-# 0.4.0 (2018-06-04) [Release Candidate]
+# Changelog
+
+## Unreleased (1.1.0 in progress)
+
+Tracking the production-grade plan (PRODUCTION_GRADE.md) phase by phase.
+Each entry lists the phase from the plan and what shipped.
+
+### P4 — Atomic transfers & resume
+
+* **Atomic uploads, default on.** `SftpClient::upload()` now writes to a
+  hidden `{dir}/.{basename}.partial-{8hex}` sibling and atomically renames
+  onto the final path on success. On failure, the partial is best-effort
+  `sftpUnlink`'d so dropped uploads don't pile up. Toggle off via
+  `disableAtomicUploads()` for servers that reject overwrite-on-rename;
+  query via `getAtomicUploads()`. Constructor signature gains a fourth
+  positional arg `bool $atomicUploads = true` (existing call sites with
+  fewer args are unaffected). SCP uploads are NOT atomic — SCP is a
+  one-shot push with no rename step.
+* **`resumeUpload(string $local, string $remote, ?int $offset = null)`.**
+  Appends to a deterministic `{dir}/.{basename}.resume` sibling using
+  libssh2's `r+b` + seek (the `ab` wrapper accepts open but its `fwrite`
+  returns false). When `$offset` is null, the client stats the partial
+  and resumes from its current size; a caller-supplied offset overrides
+  the auto-detect. Failures preserve the partial so the next call picks
+  up where this one left off (contrast: atomic upload unlinks the
+  partial on failure).
+* **`resumeDownload(string $remote, string $local, ?int $offset = null)`.**
+  Appends to an existing local file; when offset is null, stats the local
+  file to derive the resume point. Returns successfully without re-opening
+  the remote stream when the local size already equals the remote — safe
+  to call after a previous successful resume.
+* Argument validation on both resume methods: negative offsets and
+  offsets beyond the source size raise `ConfigurationException`.
+* Tests: 28 new unit tests in `tests/unit/AtomicUploadAndResumeTest.php`
+  covering happy paths, partial cleanup, rename failure, size mismatch,
+  offset auto-detection, validation, no-op-on-completed, plus a
+  reflection-based test for the `seekOrThrow` defensive guard. 4 new
+  Behat scenarios in `atomic-and-resume.feature` round-trip atomic
+  uploads, resume uploads from a server-side partial, resume downloads
+  into a partial local file, and the noop-on-completed case against the
+  live atmoz/sftp container.
+* **Checksum verification (plan §P4) deferred to a follow-up.** The
+  proposed flow needs `ssh2_exec("sha256sum ...")` to verify on the
+  server side, which assumes shell access and the binary on PATH —
+  environment-dependent enough that a half-implementation would be worse
+  than what we ship today (size verification, atomic write, resume).
+  Will revisit when there's a concrete acceptance environment for the
+  exec path.
+
+### P1 (revised) — single-package public surface + domain-grouped layout
+
+* The standalone `idct/sftp-client-contracts` package is gone. Everything
+  it carried — `SftpClientInterface`, `CredentialsInterface`, the
+  `AuthMode` / `FingerprintAlgorithm` / `FingerprintEncoding` enums,
+  `RetryPolicyInterface`, `ProgressListenerInterface`, `PathValidator`,
+  `InvalidPathException` — now lives in `src/` alongside the rest of the
+  library. A separate package was overkill for a single-purpose library;
+  this collapses the maintenance surface.
+* **Source layout reorganised into per-domain sub-namespaces:**
+
+  | Old FQN | New FQN |
+  |---|---|
+  | `IDCT\Networking\Ssh\AuthMode` | `IDCT\Networking\Ssh\Auth\AuthMode` |
+  | `IDCT\Networking\Ssh\Credentials` | `IDCT\Networking\Ssh\Auth\Credentials` |
+  | `IDCT\Networking\Ssh\CredentialsInterface` | `IDCT\Networking\Ssh\Auth\CredentialsInterface` |
+  | `IDCT\Networking\Ssh\FingerprintAlgorithm` | `IDCT\Networking\Ssh\HostKey\FingerprintAlgorithm` |
+  | `IDCT\Networking\Ssh\FingerprintEncoding` | `IDCT\Networking\Ssh\HostKey\FingerprintEncoding` |
+  | `IDCT\Networking\Ssh\RetryPolicyInterface` | `IDCT\Networking\Ssh\Retry\RetryPolicyInterface` |
+  | `IDCT\Networking\Ssh\ExponentialBackoffRetryPolicy` | `IDCT\Networking\Ssh\Retry\ExponentialBackoffRetryPolicy` |
+  | `IDCT\Networking\Ssh\NoRetryPolicy` | `IDCT\Networking\Ssh\Retry\NoRetryPolicy` |
+  | `IDCT\Networking\Ssh\PathValidator` | `IDCT\Networking\Ssh\Path\PathValidator` |
+  | `IDCT\Networking\Ssh\ProgressListenerInterface` | `IDCT\Networking\Ssh\Progress\ProgressListenerInterface` |
+  | `IDCT\Networking\Ssh\Ssh2Functions` | `IDCT\Networking\Ssh\Ssh2\Ssh2Functions` |
+  | `IDCT\Networking\Ssh\Ssh2FunctionsInterface` | `IDCT\Networking\Ssh\Ssh2\Ssh2FunctionsInterface` |
+
+  `SftpClient`, `SftpClientInterface`, and everything under
+  `IDCT\Networking\Ssh\Exception\` keep their FQNs. The single-root
+  exception hierarchy stays visually grouped in one directory so the
+  `SshException` parent is obvious at a glance.
+
+  Consumer impact: update `use` statements for any class you reference
+  by FQN (mechanical search-and-replace using the table above). Behaviour
+  is unchanged.
+* Marker exception interfaces (`SshExceptionInterface`,
+  `AuthenticationExceptionInterface`, `ConfigurationExceptionInterface`,
+  `ConnectionExceptionInterface`, `RemoteFilesystemExceptionInterface`,
+  `TransferExceptionInterface`) are **removed**. Consumers should catch by
+  the concrete classes instead — every library exception now extends a
+  single root, `SshException`, so `catch (SshException $e)` is the
+  one-liner to catch anything this library throws. The concrete leaves
+  (`AuthenticationException`, `ConfigurationException`,
+  `ConnectionException`, `RemoteFilesystemException`, `TransferException`,
+  `InvalidPathException`) are unchanged in name and FQN.
+* `InvalidPathException` now extends `ConfigurationException` (not
+  `\InvalidArgumentException`) so the single-parent rule holds end-to-end.
+  `catch (ConfigurationException $e)` still catches it; the only behaviour
+  loss is that `$e instanceof \InvalidArgumentException` is now `false` —
+  a very narrow case in practice.
+* The `repositories` entry pointing at `contracts/` is removed from
+  `composer.json`, as is the `idct/sftp-client-contracts` requirement.
+  `composer.lock` is regenerated.
+* `.github/workflows/contracts-split.yml` is deleted — no separate repo to
+  push to anymore.
+* If you (a) implemented `SftpClientInterface` in your own code and (b)
+  caught exceptions by marker interface, the only edit required is
+  swapping the marker name for the concrete name (`AuthenticationException`,
+  etc.). If you only used the package as a consumer, nothing changes.
+
+### P5 — Retry policy & connection lifecycle
+
+* `connect()`, `upload()`, `download()`, `scpUpload()`, `scpDownload()` now
+  go through a configurable retry policy. Filesystem ops (`remove`,
+  `rename`, `makeDirectory`, `removeDirectory`, etc.) deliberately do
+  **not** auto-retry — those failures are usually permanent (the file
+  isn't there, the rename collision is real) and retrying masks bugs.
+* Two stock policies in `src/`:
+  - `ExponentialBackoffRetryPolicy` (the new default): 5 retries, 200 ms
+    base, 30 s cap, ±30% multiplicative jitter. Exposes its parameters as
+    readonly constructor arguments for tuning.
+  - `NoRetryPolicy`: returns 0 immediately for every call — restores the
+    pre-P5 single-attempt behaviour for callers that want it.
+* `RetryPolicyInterface` (declared in P1) is now wired.
+* `SftpClient::setRetryPolicy()` / `getRetryPolicy()` added to the
+  interface. Constructor accepts an optional third arg
+  (`new SftpClient($verifyFileSize, $ssh2, $retryPolicy)`).
+* **Never-retry hard rules** (enforced by `SftpClient` regardless of
+  policy): `AuthenticationException` (retrying a rejected password is how
+  IP bans get earned), `ConfigurationException`, `InvalidPathException`.
+* **Retryable exceptions**: `ConnectionException` always; `TransferException`
+  only when its message starts with one of a small allowlist of clearly
+  transient fragments (`Failed to copy`, `Unable to open remote`,
+  `Could not SCP-download`, `Could not SCP-upload`).
+* **Lazy reconnect**: when retry catches an error and a session is
+  established, the client calls `ping()`; if ping reports the session
+  dead, `doConnect()` runs once (bypassing the retry wrapper to avoid
+  recursion) before the next attempt. Stored connect args (host, port,
+  timeout, fingerprint, algorithm, encoding) are reused, so users get
+  transparent re-establishment after transient network failures.
+* New `SftpClient::ping(): bool` — cheap liveness probe (`ssh2_sftp_stat`
+  on `/`). Contract: never throws. Use as a keepalive or to detect dead
+  sessions in your own code.
+* Idle timeout + true circuit breaker explicitly **deferred** — short PHP
+  request lifecycle makes idle less relevant, and the policy's
+  `maxRetries` cap acts as a simple circuit guard.
+
+### P7 — PSR-3 logger integration
+
+* `SftpClient` was already `LoggerAwareInterface`; now it actually calls
+  the logger. Default is still `NullLogger`, so installing this change is
+  invisible until you `setLogger(...)`.
+* Log points / levels:
+  - `connect()` attempt + ok (`info`); transport failure, fingerprint
+    failures, SFTP-subsystem failure (`error`).
+  - Auth success (`info`), auth rejection (`notice`).
+  - `download` / `upload` start (`debug`), end (`info`, with `bytes` +
+    `duration_ms`).
+  - `scpDownload` / `scpUpload` start (`debug`), end (`info`, with
+    `duration_ms`).
+  - `remove` / `rename` / `makeDirectory` / `removeDirectory` (`debug`).
+  - `close()` (`debug`); unexpected disconnect-exception (`warning`).
+* Every record carries a base context: `correlation_id` (16-char hex,
+  fresh per `connect()`, cleared on `close()`), `host`, `port`. Use it to
+  group operations in log aggregation.
+* New `setLogContext(array $context): self` merges caller-supplied static
+  context (e.g. `request_id`, `tenant_id`) into every record. The keys
+  `correlation_id`, `host`, and `port` are reserved and silently stripped
+  from caller input.
+* Sensitive-value guard: a new lint test
+  (`tests/unit/LoggerRedactionLintTest.php`) scans every file in `src/`
+  and fails the build if any statement that contains a log call also
+  contains the literal tokens `password` or `passphrase`. Conservative —
+  false positives possible, but the cost of a real leak is high enough to
+  justify them.
+* `composer.json` `suggest:` advertises `monolog/monolog` as the typical
+  consumer-side plug-in.
+
+### P1 (original) — companion contracts package (superseded above)
+
+* (Originally shipped a standalone `idct/sftp-client-contracts` package
+  under `contracts/`. Reverted in the revision entry at the top of this
+  release — the interfaces / enums / `PathValidator` now live in `src/`
+  alongside the implementation, and the marker exception interfaces are
+  removed in favour of a single concrete `SshException` parent.)
+* **Behavioural shift (internal, still in effect):**
+  `Credentials::authorizeSshConnection()` moved to `SftpClient::authorize()`
+  (private) so `CredentialsInterface` stays pure-data. If you were calling
+  `Credentials::authorizeSshConnection()` directly (you almost certainly
+  weren't — it took an ext-ssh2 resource), that's gone.
+
+### P2 — Path safety & input validation
+
+* New `IDCT\Networking\Ssh\PathValidator`. Public API:
+  - `validateRemotePath(string $path, bool $allowAbsolute = true, int $maxLength = 4096): string`
+  - `joinRemote(string $prefix, string $path): string`
+* Every `SftpClient` method that takes a remote path now validates it
+  **before** any SFTP I/O: `download`, `upload`, `scpDownload`, `scpUpload`,
+  `remove`, `rename`, `getFileList`, `stat`, `makeDirectory`,
+  `removeDirectory`, `fileExists`.
+* Rejected inputs throw `IDCT\Networking\Ssh\Exception\InvalidPathException`
+  (extends `ConfigurationException`, which in turn extends `SshException`,
+  so `catch (SshException $e)` or `catch (ConfigurationException $e)` both
+  pick it up). Rejection rules:
+  - empty string
+  - any null byte (`\0`)
+  - any CR/LF (`\r`/`\n`) or other C0/DEL control character
+  - any path component equal to `.` or `..` (traversal)
+  - paths longer than 4096 bytes by default (configurable per call)
+  - if `allowAbsolute` is false: paths starting with `/`
+* **Breaking-ish behaviour change (T6 in the plan):** absolute remote
+  paths now *bypass* the configured remote prefix instead of being
+  concatenated. Before P2, `setRemotePrefix('/uploads/'); upload($f, '/abs/dest')`
+  silently produced the nonsensical path `/uploads//abs/dest`. After P2,
+  the absolute path is honoured as-is (`/abs/dest`) and the prefix is
+  ignored. Callers that were unknowingly relying on the broken behaviour
+  will see writes land in a different place — review your prefix usage if
+  you mix relative and absolute remote names. Relative paths are
+  unaffected.
+
+## 1.0.0 — 2026-05-17
+
+Major modernization release. PHP 8.2+ floor, full type coverage, typed
+exception hierarchy, 100% unit-test line coverage, Behat integration tests
+against a dockerised SFTP fixture, GitHub Actions CI on PHP 8.2/8.3/8.4.
+
+See `MODERNIZE.md` for the engineering plan and per-issue rationale.
+
+### Breaking changes
+* PHP `>=8.2` required (was 5.4).
+* `ext-ssh2 >=1.4` required (was 0.12).
+* `AuthMode` is now a backed `enum`: `AuthMode::Password`, `AuthMode::PublicKey`,
+  `AuthMode::Both`, `AuthMode::None`. Old `AuthMode::PASSWORD` etc. removed.
+* `Credentials` is `final readonly`; construct via the named factories
+  (`withPassword`, `withPublicKey`, `withBoth`, `withNone`). Property setters
+  are gone.
+* All thrown exceptions are now subclasses of `IDCT\Networking\Ssh\Exception\SshException`
+  (a `RuntimeException`). Bare `\Exception` is no longer thrown anywhere.
+* `connect()` signature extended with `?int $timeoutSeconds`,
+  `?string $expectedFingerprint`, `FingerprintAlgorithm $fingerprintAlgorithm`,
+  `FingerprintEncoding $fingerprintEncoding`. Existing callers passing only
+  `$host` / `$port` continue to work.
+* `getFileList()` now filters `.` and `..` by default. Pass
+  `includeDotEntries: true` for the old behaviour.
+
+### Bug fixes
+* **B1** `download()` "different file size" message no longer references an
+  undefined `$localFilePath` variable.
+* **B2** `Credentials::authorizeSshConnection()` handles every `AuthMode` (no
+  more implicit-`null` fall-through).
+* **B3** `AuthMode::Both` now requires BOTH legs to succeed; pubkey failures
+  are no longer silently swallowed.
+* **B4** SFTP URI building uses `intval($sftp)` consistently — works under
+  PHP 8 + ext-ssh2 1.4 without `TypeError` and without "Resource id #N" URIs.
+* **B5** `download()`/`upload()` use `stream_copy_to_stream` inside `try/finally`,
+  so file descriptors are never leaked on the error path.
+* **B6** `rename()` applies the remote prefix to BOTH source and destination.
+* **B7** Removed `return $this;` from constructors (dead code).
+* **B8** `setUsername(null)` no longer triggers PHP 8.1+ `strlen(null)` deprecation.
+* **B9** `getFileList()` uses `!== false` so a file literally named `"0"` doesn't
+  exit the loop early.
+* **B10** `close()` calls `ssh2_disconnect()` instead of the broken
+  `ssh2_exec($conn, 'logout')` pattern (which leaked channels and never
+  actually disconnected).
+* **B11** `getFileList()`/`download()`/`upload()` close handles in `finally`
+  blocks — no leaks on exception.
+* **B12** `Credentials` validation messages now name the actual mode the user
+  selected, not always "BOTH mode".
+
+### Security hardening
+* **S1** `connect()` accepts `expectedFingerprint` + algorithm/encoding enums;
+  a mismatch immediately disconnects before authentication.
+* **S2** Adapter `Ssh2Functions` is the single `@`-suppressed boundary; the
+  wrapper layer surfaces typed exceptions instead of raw warnings.
+* **S3** Password and passphrase parameters marked `#[\SensitiveParameter]`;
+  `Credentials::__debugInfo()` redacts the stored values from `var_dump` /
+  `print_r` / error-log output.
+* **S4** `makeDirectory()` default mode dropped from `0777` to `0755`.
+* **S5** `connect()` accepts `timeoutSeconds` and probes via
+  `stream_socket_client()` before initiating the SSH handshake.
+
+### Tooling
+* PHPStan level `max` (level 10) on `src/` with strict rules.
+* PHPUnit 11 / 12 with 100% line coverage gate (`tests/bin/check-coverage.php`).
+* Behat 3 functional suite against `atmoz/sftp` docker fixture.
+* Infection 0.29 mutation testing (`min-msi=85`, `min-covered-msi=95`).
+* PHP-CS-Fixer 3 with `@PER-CS2.0` + `@PHP82Migration`.
+* Rector 2 with PHP 8.2 level set.
+* GitHub Actions matrix across PHP 8.2 / 8.3 / 8.4.
+
+## 0.4.0 — 2018-06-04 [Release Candidate]
 
 * Changed CHANGELOG format to Markdown.
 * Added README.md.
 * Removed `integration-tests` folder. Added usage descriptions in the README.md.
 * Dropped support for php 5.3.x
 
-# 0.3.2 (2017-03-26)
-================
+## 0.3.2 — 2017-03-26
 
 * Added file size verification, fixed prefixes usage, added directory management
-methods, added fileExists method.
+  methods, added `fileExists` method.
 
-# 0.3.0 (2017-03-22)
-================
+## 0.3.0 — 2017-03-22
 
-* Changed the behavior of methods as a workaround for PHP SSH2 bug:
-https://bugs.php.net/bug.php?id=71376
-Restored previous behavior with `intval` of SFTP Resource Handle.
-
+* Changed the behavior of methods as a workaround for PHP SSH2 bug
+  https://bugs.php.net/bug.php?id=71376
+  Restored previous behavior with `intval` of SFTP Resource Handle.
 * Merged PR #6 by `pedrofornaza`.
-
 * Initialized tests scope: with TODOs.
 
-# 0.2.0 (2017-02-09)
-================
+## 0.2.0 — 2017-02-09
 
-* Changed the behavior of methods as a workaround for PHP SSH2 bug:
-https://bugs.php.net/bug.php?id=71376
+* Changed the behavior of methods as a workaround for PHP SSH2 bug
+  https://bugs.php.net/bug.php?id=71376
 
-# 0.1.0 (2014-08-16)
-================
+## 0.1.0 — 2014-08-16
 
 * Packagist support.
 * Added changelog.rst
-
