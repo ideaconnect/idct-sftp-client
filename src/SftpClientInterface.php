@@ -5,6 +5,9 @@ declare(strict_types=1);
 namespace IDCT\Networking\Ssh;
 
 use IDCT\Networking\Ssh\Auth\CredentialsInterface;
+use IDCT\Networking\Ssh\Directory\DownloadResult;
+use IDCT\Networking\Ssh\Directory\RemoteEntry;
+use IDCT\Networking\Ssh\Directory\UploadResult;
 use IDCT\Networking\Ssh\Exception\AuthenticationException;
 use IDCT\Networking\Ssh\Exception\ConfigurationException;
 use IDCT\Networking\Ssh\Exception\ConnectionException;
@@ -219,4 +222,54 @@ interface SftpClientInterface
     public function removeDirectory(string $path): self;
 
     public function fileExists(string $path): bool;
+
+    /**
+     * Recursive directory upload. Atomic + retry + progress apply per file
+     * (each file goes through {@see upload()}). Symlinks under the local
+     * tree are skipped and listed in {@see UploadResult::$skipped}.
+     *
+     * @throws ConfigurationException missing local dir or invalid remote path
+     * @throws TransferException per-file failure
+     * @throws RemoteFilesystemException mkdir failed
+     */
+    public function uploadDirectory(
+        string $localDir,
+        string $remoteDir,
+        bool $createRemoteDir = true,
+        ?ProgressListenerInterface $progress = null,
+    ): UploadResult;
+
+    /**
+     * Recursive directory download. Mirrors {@see uploadDirectory()} in
+     * reverse; symlinks on the remote are skipped.
+     *
+     * @throws ConfigurationException invalid remote path / local dir unwritable
+     * @throws TransferException per-file failure
+     * @throws RemoteFilesystemException remote stat / readdir failed
+     */
+    public function downloadDirectory(
+        string $remoteDir,
+        string $localDir,
+        ?ProgressListenerInterface $progress = null,
+    ): DownloadResult;
+
+    /**
+     * Remove a remote directory and everything beneath it. Recurses
+     * post-order (children before parent) so a single permission failure
+     * on a leaf surfaces with the offending path, rather than after the
+     * whole tree has been partially demolished.
+     *
+     * @throws RemoteFilesystemException unlink or rmdir refused
+     */
+    public function removeDirectoryTree(string $remoteDir): self;
+
+    /**
+     * Recursively yield every entry under `$remoteDir`, post-order
+     * (children before their parent). Symlinks are yielded but their
+     * targets are not followed.
+     *
+     * @return iterable<RemoteEntry>
+     * @throws RemoteFilesystemException
+     */
+    public function walk(string $remoteDir): iterable;
 }

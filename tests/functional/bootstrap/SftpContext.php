@@ -8,7 +8,10 @@ use Behat\Behat\Context\Context;
 use Behat\Hook\AfterSuite;
 use Behat\Hook\BeforeScenario;
 use Behat\Hook\BeforeSuite;
+use Behat\Gherkin\Node\TableNode;
 use IDCT\Networking\Ssh\Auth\Credentials;
+use IDCT\Networking\Ssh\Directory\DownloadResult;
+use IDCT\Networking\Ssh\Directory\UploadResult;
 use IDCT\Networking\Ssh\Exception\AuthenticationException;
 use IDCT\Networking\Ssh\Exception\ConnectionException;
 use IDCT\Networking\Ssh\Exception\InvalidPathException;
@@ -44,6 +47,8 @@ final class SftpContext implements Context
 
     private ?int $lastDownloadBytes = null;
     private ?object $progressRecorder = null;
+    private ?UploadResult $lastUploadResult = null;
+    private ?DownloadResult $lastDownloadResult = null;
 
     #[BeforeSuite]
     public static function startFixture(): void
@@ -69,6 +74,8 @@ final class SftpContext implements Context
         $this->sinkStream = null;
         $this->lastDownloadBytes = null;
         $this->progressRecorder = null;
+        $this->lastUploadResult = null;
+        $this->lastDownloadResult = null;
     }
 
     /**
@@ -411,6 +418,108 @@ final class SftpContext implements Context
         $events = $rec->events;
         Assert::assertSame('completed', $events[count($events) - 1]['event']);
         Assert::assertSame($expected, $events[count($events) - 1]['args'][0]);
+    }
+
+    /**
+     * @Given /^I have a local directory "([^"]+)" with files:$/
+     */
+    public function iHaveALocalDirectoryWithFiles(string $dir, TableNode $table): void
+    {
+        $root = $this->tmpDir . '/' . trim($dir, '/');
+        if (! is_dir($root)) {
+            mkdir($root, 0o755, true);
+        }
+        foreach ($table->getHash() as $row) {
+            $path = $root . '/' . ltrim($row['path'], '/');
+            $parent = \dirname($path);
+            if (! is_dir($parent)) {
+                mkdir($parent, 0o755, true);
+            }
+            file_put_contents($path, $row['contents']);
+        }
+    }
+
+    /**
+     * @Given /^the local directory "([^"]+)" also has an empty subdirectory "([^"]+)"$/
+     */
+    public function localDirHasEmptySubdir(string $dir, string $sub): void
+    {
+        $path = $this->tmpDir . '/' . trim($dir, '/') . '/' . trim($sub, '/');
+        if (! is_dir($path)) {
+            mkdir($path, 0o755, true);
+        }
+    }
+
+    /**
+     * @When /^I uploadDirectory "([^"]+)" to "([^"]+)"$/
+     */
+    public function iUploadDirectory(string $localDir, string $remoteDir): void
+    {
+        try {
+            $this->lastUploadResult = $this->requireClient()->uploadDirectory(
+                $this->tmpDir . '/' . trim($localDir, '/'),
+                $remoteDir,
+            );
+        } catch (\Throwable $e) {
+            $this->lastError = $e;
+        }
+    }
+
+    /**
+     * @When /^I downloadDirectory "([^"]+)" to "([^"]+)"$/
+     */
+    public function iDownloadDirectory(string $remoteDir, string $localDir): void
+    {
+        try {
+            $this->lastDownloadResult = $this->requireClient()->downloadDirectory(
+                $remoteDir,
+                $this->tmpDir . '/' . trim($localDir, '/'),
+            );
+        } catch (\Throwable $e) {
+            $this->lastError = $e;
+        }
+    }
+
+    /**
+     * @When /^I removeDirectoryTree "([^"]+)"$/
+     */
+    public function iRemoveDirectoryTree(string $remoteDir): void
+    {
+        try {
+            $this->requireClient()->removeDirectoryTree($remoteDir);
+        } catch (\Throwable $e) {
+            $this->lastError = $e;
+        }
+    }
+
+    /**
+     * @Then /^the upload result reports (\d+) files and (\d+) bytes transferred$/
+     */
+    public function uploadResultReports(int $files, int $bytes): void
+    {
+        Assert::assertNotNull($this->lastUploadResult);
+        Assert::assertSame($files, $this->lastUploadResult->filesTransferred);
+        Assert::assertSame($bytes, $this->lastUploadResult->bytesTransferred);
+    }
+
+    /**
+     * @Then /^the local directory "([^"]+)" exists$/
+     */
+    public function localDirectoryExists(string $dir): void
+    {
+        Assert::assertDirectoryExists($this->tmpDir . '/' . trim($dir, '/'));
+    }
+
+    /**
+     * @Then /^the remote directory "([^"]+)" no longer exists$/
+     */
+    public function remoteDirectoryGone(string $dir): void
+    {
+        // fileExists on a directory path returns true if it's there, false if not.
+        Assert::assertFalse(
+            $this->requireClient()->fileExists($dir),
+            'expected remote directory to be gone: ' . $dir,
+        );
     }
 
     /**

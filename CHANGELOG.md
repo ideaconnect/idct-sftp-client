@@ -5,6 +5,23 @@
 Tracking the production-grade plan (PRODUCTION_GRADE.md) phase by phase.
 Each entry lists the phase from the plan and what shipped.
 
+### P3 — Recursive directory operations
+
+* New `src/Directory/` namespace ships four small value types:
+  - `EntryType` enum: `File | Directory | Symlink | Other` (sockets / FIFOs / devices fall into `Other`).
+  - `RemoteEntry` readonly: `{path, type, ?size}`.
+  - `UploadResult` / `DownloadResult` readonly: `{filesTransferred, bytesTransferred, skipped}`.
+* New `SftpClient::walk(string $remoteDir): iterable<RemoteEntry>` — post-order generator (children before their parent). Useful for `rm -rf`, archive backup, audits.
+* New `SftpClient::uploadDirectory(string $localDir, string $remoteDir, bool $createRemoteDir = true, ?ProgressListenerInterface)`: recursive upload. Walks the local tree via `RecursiveIteratorIterator` (top-down so dirs land before files), `mkdir`s each subdir, and delegates per-file transfer to `upload()` — so atomic write, retry, file-size verification, and progress emission all apply per file. Symlinks under the local tree are skipped and listed in `UploadResult::$skipped`.
+* New `SftpClient::downloadDirectory(string $remoteDir, string $localDir, ?ProgressListenerInterface): DownloadResult` — mirror image. Creates the local destination if missing; delegates per-file to `download()`. Remote symlinks are skipped.
+* New `SftpClient::removeDirectoryTree(string $remoteDir): self` — post-order recursion. `sftpUnlink`s files and symlinks, `sftpRmdir`s empty directories, removes `$remoteDir` itself last. Server permission failures surface as `RemoteFilesystemException` with the offending path.
+* Internal: `entryType()` classifies remote paths via `lstat()` on the SFTP stream wrapper (mode bits) with a fallback to `sftpStat()` for older libssh2 builds that don't expose lstat through the URL stat path.
+* Tests: 22 new unit tests in `tests/unit/DirectoryOperationsTest.php` cover walk ordering, symlink classification, the lstat→sftpStat fallback chain, nested round-trips (≥ 3 levels with mixed empty / non-empty dirs), per-method failure paths. 3 small VO tests in `tests/unit/Directory/ValueObjectsTest.php`. 2 Behat scenarios in `directory-ops.feature` round-trip a nested tree and exercise `removeDirectoryTree` against the live atmoz/sftp container.
+* Plan deltas (deferred to follow-up tasks, documented in `PRODUCTION_GRADE.md` §P3):
+  - **Follow-symlinks-with-cycle-detection.** Ship default is "skip symlinks" only; the opt-in follow mode with inode tracking is deferred.
+  - **Conflict modes (skip / fail).** Ships overwrite-only (atomic rename does this naturally for files; `mkdir` is idempotent).
+  - **Best-effort partial-failure mode.** Ships abort-on-first-failure (the plan's default); the best-effort variant that returns the list of failures is deferred.
+
 ### P6 — Streaming sources/sinks & progress callbacks
 
 * `ProgressListenerInterface` (declared in P1, unwired until now) is wired

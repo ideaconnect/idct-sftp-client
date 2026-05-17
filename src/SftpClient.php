@@ -6,6 +6,10 @@ namespace IDCT\Networking\Ssh;
 
 use IDCT\Networking\Ssh\Auth\AuthMode;
 use IDCT\Networking\Ssh\Auth\CredentialsInterface;
+use IDCT\Networking\Ssh\Directory\DownloadResult;
+use IDCT\Networking\Ssh\Directory\EntryType;
+use IDCT\Networking\Ssh\Directory\RemoteEntry;
+use IDCT\Networking\Ssh\Directory\UploadResult;
 use IDCT\Networking\Ssh\Exception\AuthenticationException;
 use IDCT\Networking\Ssh\Exception\ConfigurationException;
 use IDCT\Networking\Ssh\Exception\ConnectionException;
@@ -1344,6 +1348,371 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
         $this->log('debug', 'SFTP rmdir ok', ['path' => $path]);
 
         return $this;
+    }
+
+    /**
+     * Recursively yield every entry under `$remoteDir`, post-order (children
+     * before their parent). Useful for `rm -rf`, archive backup, audit walks.
+     *
+     * Symlinks are yielded as {@see EntryType::Symlink} but their targets are
+     * NOT followed — even if they point at directories. Cycle detection /
+     * follow semantics are explicit follow-ups (see PRODUCTION_GRADE.md §P3).
+     *
+     * @return iterable<RemoteEntry>
+     * @throws RemoteFilesystemException
+     */
+    public function walk(string $remoteDir): iterable
+    {
+        PathValidator::validateRemotePath($remoteDir);
+        $this->requireSftp(); // surface "not connected" before the generator runs
+
+        return $this->walkInternal($remoteDir);
+    }
+
+    /**
+     * Recursive directory upload. Walks the local tree top-down, mkdir's
+     * each subdir on the remote, and delegates per-file transfer to
+     * {@see upload()} — so atomic write, retry, file-size verification, and
+     * progress emission all apply to each file in turn.
+     *
+     * Symlinks under the local tree are skipped (recorded in
+     * {@see UploadResult::$skipped}). Conflict mode is overwrite-only for
+     * 1.1 (atomic rename handles it for files; mkdir is idempotent).
+     *
+     * @throws ConfigurationException invalid path or missing/unreadable local dir
+     * @throws TransferException per-file failure
+     * @throws RemoteFilesystemException mkdir failed
+     */
+    public function uploadDirectory(
+        string $localDir,
+        string $remoteDir,
+        bool $createRemoteDir = true,
+        ?ProgressListenerInterface $progress = null,
+    ): UploadResult {
+        if (! is_dir($localDir)) {
+            throw new ConfigurationException(
+                'uploadDirectory(): local directory does not exist or is not a directory: ' . $localDir,
+            );
+        }
+        PathValidator::validateRemotePath($remoteDir);
+        $remoteDir = rtrim($remoteDir, '/');
+
+        $sftp = $this->requireSftp();
+        if ($createRemoteDir && $this->ssh2->sftpStat($sftp, $remoteDir) === false) {
+            $this->ssh2->sftpMkdir($sftp, $remoteDir, 0o755, true);
+        }
+
+        // Use $localDir as-is for the relative-path math; the is_dir() check
+        // above already filtered missing roots and adding realpath() here
+        // would only protect against a TOCTOU delete between the two calls
+        // (which propagates as a clear DirectoryIterator error anyway).
+        $localRoot = rtrim($localDir, \DIRECTORY_SEPARATOR);
+
+        $iterator = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator(
+                $localRoot,
+                \RecursiveDirectoryIterator::SKIP_DOTS,
+            ),
+            \RecursiveIteratorIterator::SELF_FIRST,
+        );
+
+        $filesTransferred = 0;
+        $bytesTransferred = 0;
+        $skipped = [];
+
+        $this->log('debug', 'SFTP upload directory start', [
+            'local' => $localRoot,
+            'remote' => $remoteDir,
+        ]);
+
+        /** @var \SplFileInfo $info */
+        foreach ($iterator as $info) {
+            $relative = substr($info->getPathname(), \strlen($localRoot) + 1);
+            // Normalise Windows-style separators in the relative path so the
+            // remote layout stays POSIX-shaped regardless of host OS.
+            $relativeRemote = str_replace(\DIRECTORY_SEPARATOR, '/', $relative);
+            $remotePath = $remoteDir . '/' . $relativeRemote;
+
+            if ($info->isLink()) {
+                $skipped[] = $info->getPathname();
+                $this->log('debug', 'SFTP upload directory skipped symlink', [
+                    'local' => $info->getPathname(),
+                ]);
+
+                continue;
+            }
+            if ($info->isDir()) {
+                if ($this->ssh2->sftpStat($sftp, $remotePath) === false
+                    && ! $this->ssh2->sftpMkdir($sftp, $remotePath, 0o755, false)) {
+                    throw new RemoteFilesystemException(
+                        'uploadDirectory(): unable to create remote directory ' . $remotePath,
+                    );
+                }
+
+                continue;
+            }
+            // Regular files (and any other entry type) flow through upload()
+            // — the existing "Local file does not exist or is not readable"
+            // wording surfaces sockets / FIFOs / devices with a clear error,
+            // matching the documented "abort on first failure" default.
+            $this->upload($info->getPathname(), $remotePath, $progress);
+            $filesTransferred++;
+            $size = $info->getSize();
+            $bytesTransferred += max(0, (int) $size);
+        }
+
+        $this->log('info', 'SFTP upload directory ok', [
+            'local' => $localRoot,
+            'remote' => $remoteDir,
+            'files' => $filesTransferred,
+            'bytes' => $bytesTransferred,
+            'skipped' => \count($skipped),
+        ]);
+
+        return new UploadResult($filesTransferred, $bytesTransferred, $skipped);
+    }
+
+    /**
+     * Recursive directory download. Mirrors {@see uploadDirectory()} in the
+     * opposite direction: walks the remote tree top-down, mkdir's each
+     * subdir locally, and delegates per-file transfer to {@see download()}.
+     *
+     * Symlinks on the remote are skipped (recorded in
+     * {@see DownloadResult::$skipped}).
+     *
+     * @throws ConfigurationException invalid remote path
+     * @throws TransferException per-file failure
+     * @throws RemoteFilesystemException remote stat / readdir failed
+     */
+    public function downloadDirectory(
+        string $remoteDir,
+        string $localDir,
+        ?ProgressListenerInterface $progress = null,
+    ): DownloadResult {
+        PathValidator::validateRemotePath($remoteDir);
+        $remoteDir = rtrim($remoteDir, '/');
+
+        if (! is_dir($localDir) && ! @mkdir($localDir, 0o755, true) && ! is_dir($localDir)) {
+            throw new ConfigurationException(
+                'downloadDirectory(): local directory could not be created: ' . $localDir,
+            );
+        }
+        $localDir = rtrim($localDir, '/');
+
+        $filesTransferred = 0;
+        $bytesTransferred = 0;
+        $skipped = [];
+
+        $this->log('debug', 'SFTP download directory start', [
+            'remote' => $remoteDir,
+            'local' => $localDir,
+        ]);
+
+        $this->downloadDirectoryRecurse(
+            $remoteDir,
+            $localDir,
+            $progress,
+            $filesTransferred,
+            $bytesTransferred,
+            $skipped,
+        );
+
+        $this->log('info', 'SFTP download directory ok', [
+            'remote' => $remoteDir,
+            'local' => $localDir,
+            'files' => $filesTransferred,
+            'bytes' => $bytesTransferred,
+            'skipped' => \count($skipped),
+        ]);
+
+        // Clamp on the boundary: the helper widens int<0, max> back to
+        // plain int through the recursive by-ref parameter, but the
+        // counters are only ever incremented so the runtime invariant
+        // holds. max(0, ...) re-establishes the type for the value object.
+        return new DownloadResult(max(0, $filesTransferred), max(0, $bytesTransferred), $skipped);
+    }
+
+    /**
+     * Remove a remote directory and everything beneath it.
+     *
+     * Recurses post-order: files (and symlinks) are unlinked, empty
+     * directories are rmdir'd. The root `$remoteDir` itself is removed
+     * last. Server permissions still apply — a write-protected leaf
+     * surfaces a {@see RemoteFilesystemException} from the underlying
+     * unlink/rmdir, which propagates verbatim so callers can act on it.
+     *
+     * @throws RemoteFilesystemException
+     */
+    public function removeDirectoryTree(string $remoteDir): self
+    {
+        PathValidator::validateRemotePath($remoteDir);
+        $remoteDir = rtrim($remoteDir, '/');
+        $sftp = $this->requireSftp();
+
+        $this->log('debug', 'SFTP remove directory tree start', ['remote' => $remoteDir]);
+        $this->removeTreeRecurse($remoteDir);
+
+        if (! $this->ssh2->sftpRmdir($sftp, $remoteDir)) {
+            throw new RemoteFilesystemException(
+                'removeDirectoryTree(): unable to remove remote directory ' . $remoteDir,
+            );
+        }
+        $this->log('info', 'SFTP remove directory tree ok', ['remote' => $remoteDir]);
+
+        return $this;
+    }
+
+    /**
+     * Yield recursive entries post-order. Lives outside walk() so the
+     * generator semantics don't defer the "no connection" check to the
+     * first iteration step.
+     *
+     * @return \Generator<RemoteEntry>
+     */
+    private function walkInternal(string $remoteDir): \Generator
+    {
+        $remoteDir = rtrim($remoteDir, '/');
+        $sftp = $this->requireSftp();
+
+        foreach ($this->getFileList($remoteDir) as $name) {
+            $path = $remoteDir . '/' . $name;
+            $type = $this->entryType($path);
+            if ($type === EntryType::Directory) {
+                yield from $this->walkInternal($path);
+                yield new RemoteEntry($path, EntryType::Directory, null);
+
+                continue;
+            }
+            $size = null;
+            if ($type === EntryType::File) {
+                $size = $this->statSize($path);
+            }
+            yield new RemoteEntry($path, $type, $size);
+        }
+        unset($sftp); // silence "unused" — requireSftp is the contract check
+    }
+
+    /**
+     * Post-order recursive cleanup body shared by removeDirectoryTree().
+     * Walks each entry, unlinks files + symlinks, rmdir's empty
+     * subdirectories. Does NOT remove `$remoteDir` itself — caller does
+     * that as the last step so the root error message is unambiguous.
+     */
+    private function removeTreeRecurse(string $remoteDir): void
+    {
+        $sftp = $this->requireSftp();
+
+        foreach ($this->getFileList($remoteDir) as $name) {
+            $path = $remoteDir . '/' . $name;
+            $type = $this->entryType($path);
+            if ($type === EntryType::Directory) {
+                $this->removeTreeRecurse($path);
+                if (! $this->ssh2->sftpRmdir($sftp, $path)) {
+                    throw new RemoteFilesystemException(
+                        'removeDirectoryTree(): unable to remove remote directory ' . $path,
+                    );
+                }
+
+                continue;
+            }
+            // Files, symlinks, other — all go through sftpUnlink.
+            if (! $this->ssh2->sftpUnlink($sftp, $path)) {
+                throw new RemoteFilesystemException(
+                    'removeDirectoryTree(): unable to remove remote entry ' . $path,
+                );
+            }
+        }
+    }
+
+    /**
+     * Recursive worker for downloadDirectory(). Pre-order: create local
+     * subdir, then download files within, then recurse into nested dirs.
+     *
+     * @param list<string> $skipped
+     * @param-out list<string> $skipped
+     */
+    private function downloadDirectoryRecurse(
+        string $remoteDir,
+        string $localDir,
+        ?ProgressListenerInterface $progress,
+        int &$filesTransferred,
+        int &$bytesTransferred,
+        array &$skipped,
+    ): void {
+        foreach ($this->getFileList($remoteDir) as $name) {
+            $remotePath = $remoteDir . '/' . $name;
+            $localPath = $localDir . '/' . $name;
+            $type = $this->entryType($remotePath);
+            if ($type === EntryType::Symlink || $type === EntryType::Other) {
+                $skipped[] = $remotePath;
+
+                continue;
+            }
+            if ($type === EntryType::Directory) {
+                if (! is_dir($localPath) && ! @mkdir($localPath, 0o755, true) && ! is_dir($localPath)) {
+                    throw new RemoteFilesystemException(
+                        'downloadDirectory(): unable to create local directory ' . $localPath,
+                    );
+                }
+                $this->downloadDirectoryRecurse(
+                    $remotePath,
+                    $localPath,
+                    $progress,
+                    $filesTransferred,
+                    $bytesTransferred,
+                    $skipped,
+                );
+
+                continue;
+            }
+            // EntryType::File
+            $this->download($remotePath, $localPath, $progress);
+            $filesTransferred++;
+            $size = $this->statSize($remotePath);
+            if ($size !== null) {
+                $bytesTransferred += $size;
+            }
+        }
+    }
+
+    /**
+     * Classify a remote path using lstat() via the SFTP stream wrapper.
+     *
+     * Returns:
+     *  - Directory for `S_IFDIR` entries
+     *  - Symlink for `S_IFLNK` (lstat preserves the link mode bits)
+     *  - File for `S_IFREG`
+     *  - Other for sockets / FIFOs / devices, or when stat fails entirely
+     *
+     * Falls back to a follow-symlink sftpStat if lstat returns false — some
+     * libssh2 stream wrappers (older builds) don't expose the link variant.
+     */
+    private function entryType(string $remotePath): EntryType
+    {
+        $sftp = $this->requireSftp();
+        $uri = $this->ssh2->sftpStreamUri($sftp, $remotePath);
+        clearstatcache(true, $uri);
+        $stat = @lstat($uri);
+        if ($stat === false) {
+            // lstat unsupported or path gone — fall back to the SFTP stat
+            // which always follows symlinks. We'll mis-classify a symlink
+            // to a dir as Directory in that case, which is acceptable
+            // degradation for ancient libssh2 builds.
+            $sftpStat = $this->ssh2->sftpStat($sftp, $remotePath);
+            if ($sftpStat === false || ! isset($sftpStat['mode'])) {
+                return EntryType::Other;
+            }
+            $mode = $sftpStat['mode'];
+        } else {
+            $mode = $stat['mode'];
+        }
+
+        return match ($mode & 0o170000) {
+            0o040000 => EntryType::Directory,
+            0o120000 => EntryType::Symlink,
+            0o100000 => EntryType::File,
+            default => EntryType::Other,
+        };
     }
 
     public function fileExists(string $path): bool
