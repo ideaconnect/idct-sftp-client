@@ -16,6 +16,7 @@ use IDCT\Networking\Ssh\Exception\RemoteFilesystemException;
 use IDCT\Networking\Ssh\Exception\TransferException;
 use IDCT\Networking\Ssh\HostKey\FingerprintAlgorithm;
 use IDCT\Networking\Ssh\HostKey\FingerprintEncoding;
+use IDCT\Networking\Ssh\Progress\ProgressListenerInterface;
 use IDCT\Networking\Ssh\SftpClient;
 use PHPUnit\Framework\Assert;
 
@@ -34,6 +35,15 @@ final class SftpContext implements Context
     private ?SftpClient $client = null;
     private string $tmpDir;
     private ?\Throwable $lastError = null;
+
+    /** @var resource|null memory stream used by uploadStream/downloadStream scenarios */
+    private mixed $memoryStream = null;
+
+    /** @var resource|null sink stream used by downloadStream scenarios */
+    private mixed $sinkStream = null;
+
+    private ?int $lastDownloadBytes = null;
+    private ?object $progressRecorder = null;
 
     #[BeforeSuite]
     public static function startFixture(): void
@@ -55,6 +65,10 @@ final class SftpContext implements Context
         mkdir($this->tmpDir, 0o755, true);
         $this->client = null;
         $this->lastError = null;
+        $this->memoryStream = null;
+        $this->sinkStream = null;
+        $this->lastDownloadBytes = null;
+        $this->progressRecorder = null;
     }
 
     /**
@@ -248,6 +262,155 @@ final class SftpContext implements Context
         } catch (\Throwable $e) {
             $this->lastError = $e;
         }
+    }
+
+    /**
+     * @Given /^I have an in-memory stream containing "([^"]*)"$/
+     */
+    public function iHaveAnInMemoryStream(string $contents): void
+    {
+        $stream = fopen('php://memory', 'r+b');
+        Assert::assertNotFalse($stream);
+        fwrite($stream, $contents);
+        rewind($stream);
+        $this->memoryStream = $stream;
+    }
+
+    /**
+     * @When /^I uploadStream to "([^"]+)"$/
+     */
+    public function iUploadStream(string $remotePath): void
+    {
+        try {
+            $stream = $this->memoryStream;
+            Assert::assertNotNull($stream, 'No memory stream prepared — call "I have an in-memory stream" first.');
+            $this->requireClient()->uploadStream($stream, $remotePath);
+            fclose($stream);
+            $this->memoryStream = null;
+        } catch (\Throwable $e) {
+            $this->lastError = $e;
+        }
+    }
+
+    /**
+     * @When /^I downloadStream "([^"]+)" into a sink$/
+     */
+    public function iDownloadStreamIntoSink(string $remotePath): void
+    {
+        try {
+            $sink = fopen('php://memory', 'r+b');
+            Assert::assertNotFalse($sink);
+            $this->sinkStream = $sink;
+            $this->lastDownloadBytes = $this->requireClient()->downloadStream($remotePath, $sink);
+        } catch (\Throwable $e) {
+            $this->lastError = $e;
+        }
+    }
+
+    /**
+     * @Then /^the sink received "([^"]*)"$/
+     */
+    public function sinkReceived(string $expected): void
+    {
+        $sink = $this->sinkStream;
+        Assert::assertNotNull($sink);
+        rewind($sink);
+        $got = stream_get_contents($sink);
+        fclose($sink);
+        $this->sinkStream = null;
+        Assert::assertSame($expected, $got);
+    }
+
+    /**
+     * @Then /^the reported byte count is (\d+)$/
+     */
+    public function reportedByteCount(int $expected): void
+    {
+        Assert::assertSame($expected, $this->lastDownloadBytes);
+    }
+
+    /**
+     * @Given /^a progress listener is attached$/
+     */
+    public function progressListenerIsAttached(): void
+    {
+        $this->progressRecorder = new class implements ProgressListenerInterface {
+            /** @var list<array{event: string, args: array<int, mixed>}> */
+            public array $events = [];
+
+            public function started(string $operation, ?int $totalBytes): void
+            {
+                $this->events[] = ['event' => 'started', 'args' => [$operation, $totalBytes]];
+            }
+
+            public function progress(int $bytesDone): void
+            {
+                $this->events[] = ['event' => 'progress', 'args' => [$bytesDone]];
+            }
+
+            public function completed(int $bytesDone): void
+            {
+                $this->events[] = ['event' => 'completed', 'args' => [$bytesDone]];
+            }
+
+            public function failed(\Throwable $e): void
+            {
+                $this->events[] = ['event' => 'failed', 'args' => [$e]];
+            }
+        };
+    }
+
+    /**
+     * @Given /^the chunk size is (\d+)$/
+     */
+    public function chunkSizeIs(int $bytes): void
+    {
+        $this->requireClient()->setChunkSize($bytes);
+    }
+
+    /**
+     * @When /^I upload "([^"]+)" to "([^"]+)" with the listener$/
+     */
+    public function iUploadWithListener(string $localName, string $remotePath): void
+    {
+        try {
+            /** @var ProgressListenerInterface $listener */
+            $listener = $this->progressRecorder;
+            $this->requireClient()->upload($this->tmpDir . '/' . $localName, $remotePath, $listener);
+        } catch (\Throwable $e) {
+            $this->lastError = $e;
+        }
+    }
+
+    /**
+     * @Then /^the listener observed the lifecycle started, progress, completed for "([^"]+)"$/
+     */
+    public function listenerObservedLifecycle(string $operation): void
+    {
+        $rec = $this->progressRecorder;
+        Assert::assertNotNull($rec);
+        /** @var list<array{event: string, args: array<int, mixed>}> $events */
+        $events = $rec->events;
+        Assert::assertNotEmpty($events);
+        Assert::assertSame('started', $events[0]['event']);
+        Assert::assertSame($operation, $events[0]['args'][0]);
+        Assert::assertSame('completed', $events[count($events) - 1]['event']);
+
+        $progressCount = count(array_filter($events, static fn($e): bool => $e['event'] === 'progress'));
+        Assert::assertGreaterThan(0, $progressCount, 'expected at least one progress emission');
+    }
+
+    /**
+     * @Then /^the listener observed a final byte count of (\d+)$/
+     */
+    public function listenerFinalByteCount(int $expected): void
+    {
+        $rec = $this->progressRecorder;
+        Assert::assertNotNull($rec);
+        /** @var list<array{event: string, args: array<int, mixed>}> $events */
+        $events = $rec->events;
+        Assert::assertSame('completed', $events[count($events) - 1]['event']);
+        Assert::assertSame($expected, $events[count($events) - 1]['args'][0]);
     }
 
     /**

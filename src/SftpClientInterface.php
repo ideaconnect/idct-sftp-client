@@ -13,6 +13,7 @@ use IDCT\Networking\Ssh\Exception\SshException;
 use IDCT\Networking\Ssh\Exception\TransferException;
 use IDCT\Networking\Ssh\HostKey\FingerprintAlgorithm;
 use IDCT\Networking\Ssh\HostKey\FingerprintEncoding;
+use IDCT\Networking\Ssh\Progress\ProgressListenerInterface;
 use IDCT\Networking\Ssh\Retry\RetryPolicyInterface;
 
 /**
@@ -55,6 +56,17 @@ interface SftpClientInterface
     public function getAtomicUploads(): bool;
 
     /**
+     * Bytes per fread/fwrite during stream copies. Defaults to 1 MiB; 8 MiB
+     * can be dramatically faster on high-latency / high-bandwidth links.
+     * Must be at least 1.
+     *
+     * @throws ConfigurationException
+     */
+    public function setChunkSize(int $bytes): self;
+
+    public function getChunkSize(): int;
+
+    /**
      * @throws ConfigurationException credentials not set, fingerprint mismatch
      * @throws ConnectionException tcp/handshake failure
      * @throws AuthenticationException auth rejected
@@ -92,7 +104,11 @@ interface SftpClientInterface
     public function getRetryPolicy(): RetryPolicyInterface;
 
     /** @throws TransferException */
-    public function download(string $remoteFilePath, ?string $localFileName = null): self;
+    public function download(
+        string $remoteFilePath,
+        ?string $localFileName = null,
+        ?ProgressListenerInterface $progress = null,
+    ): self;
 
     /**
      * Resume an interrupted download by appending to an existing local file.
@@ -106,10 +122,19 @@ interface SftpClientInterface
      * @throws TransferException stream copy / open / seek failed
      * @throws ConfigurationException negative offset, or offset beyond the remote file
      */
-    public function resumeDownload(string $remoteFilePath, string $localFileName, ?int $offset = null): self;
+    public function resumeDownload(
+        string $remoteFilePath,
+        string $localFileName,
+        ?int $offset = null,
+        ?ProgressListenerInterface $progress = null,
+    ): self;
 
     /** @throws TransferException */
-    public function upload(string $localFilePath, ?string $remoteFileName = null): self;
+    public function upload(
+        string $localFilePath,
+        ?string $remoteFileName = null,
+        ?ProgressListenerInterface $progress = null,
+    ): self;
 
     /**
      * Resume an interrupted upload by appending to a deterministic
@@ -124,7 +149,44 @@ interface SftpClientInterface
      * @throws TransferException stream copy / open / rename failed
      * @throws ConfigurationException negative offset, or offset beyond the local file
      */
-    public function resumeUpload(string $localFilePath, string $remoteFileName, ?int $offset = null): self;
+    public function resumeUpload(
+        string $localFilePath,
+        string $remoteFileName,
+        ?int $offset = null,
+        ?ProgressListenerInterface $progress = null,
+    ): self;
+
+    /**
+     * Stream-source upload. Reads from any open PHP resource (file handle,
+     * php://memory, S3 stream wrapper, custom user stream) and writes to
+     * the remote path. Honors the atomic-uploads flag the same way as
+     * {@see upload()}.
+     *
+     * @param resource $stream
+     * @throws TransferException stream copy / open / rename failed
+     * @throws ConfigurationException $stream is not a resource, expectedSize mismatch
+     */
+    public function uploadStream(
+        mixed $stream,
+        string $remoteFilePath,
+        ?int $expectedSize = null,
+        ?ProgressListenerInterface $progress = null,
+    ): self;
+
+    /**
+     * Stream-sink download. Writes the remote file's contents to any open
+     * PHP resource. Returns the number of bytes written.
+     *
+     * @param resource $stream
+     * @return int<0, max>
+     * @throws TransferException stream copy / open failed
+     * @throws ConfigurationException $stream is not a resource
+     */
+    public function downloadStream(
+        string $remoteFilePath,
+        mixed $stream,
+        ?ProgressListenerInterface $progress = null,
+    ): int;
 
     /** @throws TransferException */
     public function scpDownload(string $remoteFilePath, ?string $localFileName = null): self;

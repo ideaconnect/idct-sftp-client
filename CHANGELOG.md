@@ -5,6 +5,50 @@
 Tracking the production-grade plan (PRODUCTION_GRADE.md) phase by phase.
 Each entry lists the phase from the plan and what shipped.
 
+### P6 — Streaming sources/sinks & progress callbacks
+
+* `ProgressListenerInterface` (declared in P1, unwired until now) is wired
+  into every SFTP transfer path: `upload()`, `download()`, `resumeUpload()`,
+  `resumeDownload()`, `uploadStream()`, `downloadStream()`. Pass an
+  implementation via the new optional `?ProgressListenerInterface $progress`
+  argument. SCP transfers are NOT wired — ext-ssh2 doesn't expose
+  libssh2's per-chunk callbacks for `scp_send` / `scp_recv`.
+* Lifecycle contract enforced by `SftpClient`:
+  `started($operation, $totalBytes)` → zero or more `progress($bytesDone)` →
+  exactly one of `completed($bytesDone)` or `failed(\Throwable)`. The
+  terminator covers the *whole* operation, so atomic upload's rename
+  failure surfaces as `failed()` rather than a stray `completed()`.
+* New `chunkSize` constructor argument + `setChunkSize(int)` /
+  `getChunkSize()`. Defaults to `SftpClient::DEFAULT_CHUNK_SIZE` (1 MiB);
+  controls per-chunk `fread`/`fwrite` size and progress emission cadence.
+  Constructor / setter throw `ConfigurationException` on `< 1`.
+* New `uploadStream(resource $stream, string $remote, ?int $expectedSize,
+  ?ProgressListenerInterface)` and `downloadStream(string $remote,
+  resource $stream, ?ProgressListenerInterface): int`. uploadStream
+  honors the atomic-uploads flag (writes to `.partial-{uuid}`, then
+  renames); downloadStream returns the byte count written to the sink.
+  Both throw `ConfigurationException` if `$stream` is not an open
+  resource; uploadStream also validates `$expectedSize >= 0`.
+* Internal: `stream_copy_to_stream()` calls in all transfer paths
+  replaced by a new chunked helper `copyWithProgress()` that emits
+  `progress($bytesDone)` after each successful chunk write. Avoids
+  `feof()` (unreliable on some libssh2 stream wrappers) — uses
+  `fread() === ''` as the EOF signal.
+* `statSize()` now returns `int<0, max>|null` so progress listeners get
+  a type-safe non-negative total.
+* Tests: 22 new unit tests in `tests/unit/StreamingAndProgressTest.php`
+  (lifecycle on success/failure for upload, download, resume*, stream
+  variants; chunkSize cadence; validation guards). 3 new Behat scenarios
+  in `streaming-progress.feature` exercise `uploadStream` from
+  `php://memory`, `downloadStream` into an in-memory sink, and the
+  end-to-end progress lifecycle.
+* Plan deviation noted: the §P6 plan also suggested a minio (S3)
+  docker-compose scenario for the "upload from S3 stream" round-trip.
+  Skipped — adds a whole second container and an AWS SDK dep for
+  marginal extra coverage over the in-memory stream test, which already
+  proves any PHP stream resource flows through `uploadStream`. Can
+  revisit if a real S3 acceptance environment surfaces.
+
 ### P4 — Atomic transfers & resume
 
 * **Atomic uploads, default on.** `SftpClient::upload()` now writes to a

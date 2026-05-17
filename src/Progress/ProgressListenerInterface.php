@@ -13,11 +13,12 @@ namespace IDCT\Networking\Ssh\Progress;
  *
  * ## Wiring status
  *
- * The interface is stable but unwired — `SftpClient::upload()` /
- * `SftpClient::download()` do not yet invoke listeners. The hook is added
- * by P6 in {@see PRODUCTION_GRADE.md}. Until then, defining an
- * implementation only gives downstream consumers type safety to prepare
- * against.
+ * Wired by `SftpClient::upload()` / `download()` / `resumeUpload()` /
+ * `resumeDownload()` / `uploadStream()` / `downloadStream()`. SCP
+ * transfers (`scpUpload()` / `scpDownload()`) do NOT emit progress events
+ * — ext-ssh2 doesn't expose libssh2's per-chunk callbacks for `scp_send`
+ * / `scp_recv`, and a single `started → completed` pair without any
+ * intermediates would mislead callers more than it would help.
  *
  * ## Lifecycle
  *
@@ -25,7 +26,7 @@ namespace IDCT\Networking\Ssh\Progress;
  * Implementations should treat `failed()` as the cleanup signal regardless of
  * whether the failure was thrown by this listener itself.
  *
- * @phpstan-type Operation 'upload'|'download'|'scpUpload'|'scpDownload'
+ * @phpstan-type Operation 'upload'|'download'|'resumeUpload'|'resumeDownload'|'uploadStream'|'downloadStream'
  */
 interface ProgressListenerInterface
 {

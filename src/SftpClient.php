@@ -16,6 +16,7 @@ use IDCT\Networking\Ssh\Exception\TransferException;
 use IDCT\Networking\Ssh\HostKey\FingerprintAlgorithm;
 use IDCT\Networking\Ssh\HostKey\FingerprintEncoding;
 use IDCT\Networking\Ssh\Path\PathValidator;
+use IDCT\Networking\Ssh\Progress\ProgressListenerInterface;
 use IDCT\Networking\Ssh\Retry\ExponentialBackoffRetryPolicy;
 use IDCT\Networking\Ssh\Retry\RetryPolicyInterface;
 use IDCT\Networking\Ssh\Ssh2\Ssh2Functions;
@@ -50,6 +51,22 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
      * atomic (no temp+rename possible) regardless of this flag.
      */
     private bool $atomicUploads;
+
+    /**
+     * Bytes per fread/fwrite call inside {@see copyWithProgress()}. 1 MiB
+     * is a safe default — some networks are dramatically faster with 8 MiB
+     * but the floor below which transfers visibly stutter is around 64 KiB.
+     * Adjust via {@see setChunkSize()}.
+     *
+     * Constrained to int<1, max> via the constructor + setter — fread()
+     * requires a positive length, and the validation throws on smaller.
+     *
+     * @var int<1, max>
+     */
+    private int $chunkSize;
+
+    /** Default chunk size if the caller doesn't override (1 MiB). */
+    public const DEFAULT_CHUNK_SIZE = 1 << 20;
 
     private readonly Ssh2FunctionsInterface $ssh2;
 
@@ -90,11 +107,16 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
         ?Ssh2FunctionsInterface $ssh2 = null,
         ?RetryPolicyInterface $retryPolicy = null,
         bool $atomicUploads = true,
+        int $chunkSize = self::DEFAULT_CHUNK_SIZE,
     ) {
+        if ($chunkSize < 1) {
+            throw new ConfigurationException(\sprintf('chunkSize must be >= 1; got %d.', $chunkSize));
+        }
         $this->fileSizeVerificationEnabled = $enableFileSizeVerification;
         $this->ssh2 = $ssh2 ?? new Ssh2Functions();
         $this->retryPolicy = $retryPolicy ?? new ExponentialBackoffRetryPolicy();
         $this->atomicUploads = $atomicUploads;
+        $this->chunkSize = $chunkSize;
         $this->logger = new NullLogger();
     }
 
@@ -161,6 +183,21 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
     public function getAtomicUploads(): bool
     {
         return $this->atomicUploads;
+    }
+
+    public function setChunkSize(int $bytes): self
+    {
+        if ($bytes < 1) {
+            throw new ConfigurationException(\sprintf('chunkSize must be >= 1; got %d.', $bytes));
+        }
+        $this->chunkSize = $bytes;
+
+        return $this;
+    }
+
+    public function getChunkSize(): int
+    {
+        return $this->chunkSize;
     }
 
     public function setCredentials(CredentialsInterface $credentials): self
@@ -342,17 +379,26 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
         return $this;
     }
 
-    public function download(string $remoteFilePath, ?string $localFileName = null): self
-    {
+    public function download(
+        string $remoteFilePath,
+        ?string $localFileName = null,
+        ?ProgressListenerInterface $progress = null,
+    ): self {
         PathValidator::validateRemotePath($remoteFilePath);
 
-        $this->retry('download', fn(): true => $this->doDownload($remoteFilePath, $localFileName));
+        $this->retry(
+            'download',
+            fn(): true => $this->doDownload($remoteFilePath, $localFileName, $progress),
+        );
 
         return $this;
     }
 
-    private function doDownload(string $remoteFilePath, ?string $localFileName): true
-    {
+    private function doDownload(
+        string $remoteFilePath,
+        ?string $localFileName,
+        ?ProgressListenerInterface $progress,
+    ): true {
         $sftp = $this->requireSftp();
 
         $savePath = $this->localPrefix . ($localFileName ?? pathinfo($remoteFilePath, PATHINFO_BASENAME));
@@ -370,43 +416,53 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
             'size' => $remoteSize,
         ]);
         $started = microtime(true);
-
-        $remoteStream = @fopen($remoteUri, 'rb');
-        if ($remoteStream === false) {
-            throw new TransferException('Unable to open remote file: ' . $remoteFilePath);
-        }
+        $progress?->started('download', $remoteSize);
 
         try {
-            $localStream = @fopen($savePath, 'wb');
-            if ($localStream === false) {
-                throw new TransferException('Unable to open local file for writing: ' . $savePath);
+            $remoteStream = @fopen($remoteUri, 'rb');
+            if ($remoteStream === false) {
+                throw new TransferException('Unable to open remote file: ' . $remoteFilePath);
             }
 
             try {
-                $copied = stream_copy_to_stream($remoteStream, $localStream);
-                if ($copied === false) {
-                    throw new TransferException('Failed to copy remote stream to local file: ' . $savePath);
+                $localStream = @fopen($savePath, 'wb');
+                if ($localStream === false) {
+                    throw new TransferException('Unable to open local file for writing: ' . $savePath);
+                }
+
+                try {
+                    $this->copyWithProgress(
+                        $remoteStream,
+                        $localStream,
+                        $progress,
+                        'Failed to copy remote stream to local file: ' . $savePath,
+                    );
+                } finally {
+                    fclose($localStream);
                 }
             } finally {
-                fclose($localStream);
+                fclose($remoteStream);
             }
-        } finally {
-            fclose($remoteStream);
+
+            if ($this->fileSizeVerificationEnabled) {
+                clearstatcache(true, $savePath);
+                $localSize = filesize($savePath);
+                if ($localSize !== $remoteSize) {
+                    throw new TransferException(\sprintf(
+                        'File size mismatch after download of %s: remote=%d, local=%d',
+                        $remoteFilePath,
+                        $remoteSize,
+                        $localSize,
+                    ));
+                }
+            }
+        } catch (\Throwable $e) {
+            $progress?->failed($e);
+
+            throw $e;
         }
 
-        if ($this->fileSizeVerificationEnabled) {
-            clearstatcache(true, $savePath);
-            $localSize = filesize($savePath);
-            if ($localSize !== $remoteSize) {
-                throw new TransferException(\sprintf(
-                    'File size mismatch after download of %s: remote=%d, local=%d',
-                    $remoteFilePath,
-                    $remoteSize,
-                    $localSize,
-                ));
-            }
-        }
-
+        $progress?->completed($remoteSize);
         $this->log('info', 'SFTP download ok', [
             'remote' => $remoteFilePath,
             'local' => $savePath,
@@ -417,15 +473,21 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
         return true;
     }
 
-    public function upload(string $localFilePath, ?string $remoteFileName = null): self
-    {
-        $this->retry('upload', fn(): true => $this->doUpload($localFilePath, $remoteFileName));
+    public function upload(
+        string $localFilePath,
+        ?string $remoteFileName = null,
+        ?ProgressListenerInterface $progress = null,
+    ): self {
+        $this->retry('upload', fn(): true => $this->doUpload($localFilePath, $remoteFileName, $progress));
 
         return $this;
     }
 
-    private function doUpload(string $localFilePath, ?string $remoteFileName): true
-    {
+    private function doUpload(
+        string $localFilePath,
+        ?string $remoteFileName,
+        ?ProgressListenerInterface $progress,
+    ): true {
         $sftp = $this->requireSftp();
 
         if (! is_file($localFilePath)) {
@@ -455,6 +517,10 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
             'atomic' => $useAtomic,
         ]);
         $started = microtime(true);
+        // filesize() returns false on stat failure (e.g., race); fall back to
+        // unknown total rather than passing a negative sentinel to the listener.
+        $startedSize = $localSize === false ? null : max(0, $localSize);
+        $progress?->started('upload', $startedSize);
 
         try {
             $localStream = @fopen($localFilePath, 'rb');
@@ -469,10 +535,12 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
                 }
 
                 try {
-                    $copied = stream_copy_to_stream($localStream, $remoteStream);
-                    if ($copied === false) {
-                        throw new TransferException('Failed to copy local stream to remote file: ' . $writePath);
-                    }
+                    $this->copyWithProgress(
+                        $localStream,
+                        $remoteStream,
+                        $progress,
+                        'Failed to copy local stream to remote file: ' . $writePath,
+                    );
                 } finally {
                     fclose($remoteStream);
                 }
@@ -500,6 +568,7 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
                 );
             }
         } catch (\Throwable $e) {
+            $progress?->failed($e);
             if ($useAtomic) {
                 $this->cleanupPartial($sftp, $writePath);
             }
@@ -507,10 +576,11 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
             throw $e;
         }
 
+        $progress?->completed($startedSize ?? 0);
         $this->log('info', 'SFTP upload ok', [
             'local' => $localFilePath,
             'remote' => $finalPath,
-            'bytes' => $localSize === false ? null : $localSize,
+            'bytes' => $startedSize,
             'duration_ms' => (int) ((microtime(true) - $started) * 1000),
             'atomic' => $useAtomic,
         ]);
@@ -518,15 +588,208 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
         return true;
     }
 
-    public function resumeUpload(string $localFilePath, string $remoteFileName, ?int $offset = null): self
-    {
-        $this->retry('resumeUpload', fn(): true => $this->doResumeUpload($localFilePath, $remoteFileName, $offset));
+    public function uploadStream(
+        mixed $stream,
+        string $remoteFilePath,
+        ?int $expectedSize = null,
+        ?ProgressListenerInterface $progress = null,
+    ): self {
+        if (! is_resource($stream)) {
+            throw new ConfigurationException('uploadStream(): $stream must be an open resource.');
+        }
+        if ($expectedSize !== null && $expectedSize < 0) {
+            throw new ConfigurationException(\sprintf(
+                'uploadStream(): $expectedSize must be >= 0; got %d.',
+                $expectedSize,
+            ));
+        }
+        $this->retry(
+            'uploadStream',
+            fn(): true => $this->doUploadStream($stream, $remoteFilePath, $expectedSize, $progress),
+        );
 
         return $this;
     }
 
-    private function doResumeUpload(string $localFilePath, string $remoteFileName, ?int $offset): true
-    {
+    /**
+     * @param resource $stream
+     * @param int<0, max>|null $expectedSize
+     */
+    private function doUploadStream(
+        mixed $stream,
+        string $remoteFilePath,
+        ?int $expectedSize,
+        ?ProgressListenerInterface $progress,
+    ): true {
+        $sftp = $this->requireSftp();
+
+        $finalPath = PathValidator::joinRemote($this->remotePrefix, $remoteFilePath);
+
+        $useAtomic = $this->atomicUploads;
+        $writePath = $useAtomic
+            ? self::partialPath($finalPath, 'partial-' . bin2hex(random_bytes(4)))
+            : $finalPath;
+        $remoteUri = $this->ssh2->sftpStreamUri($sftp, $writePath);
+
+        $this->log('debug', 'SFTP upload-stream start', [
+            'remote' => $finalPath,
+            'expected_size' => $expectedSize,
+            'atomic' => $useAtomic,
+        ]);
+        $started = microtime(true);
+        $progress?->started('uploadStream', $expectedSize);
+
+        $copied = 0;
+
+        try {
+            $remoteStream = @fopen($remoteUri, 'wb');
+            if ($remoteStream === false) {
+                throw new TransferException('Unable to open remote file for writing: ' . $writePath);
+            }
+
+            try {
+                $copied = $this->copyWithProgress(
+                    $stream,
+                    $remoteStream,
+                    $progress,
+                    'Failed to copy local stream to remote file: ' . $writePath,
+                );
+            } finally {
+                fclose($remoteStream);
+            }
+
+            if ($expectedSize !== null && $copied !== $expectedSize) {
+                throw new TransferException(\sprintf(
+                    'Stream length mismatch after upload of %s: expected=%d, copied=%d',
+                    $finalPath,
+                    $expectedSize,
+                    $copied,
+                ));
+            }
+
+            if ($useAtomic && ! $this->ssh2->sftpRename($sftp, $writePath, $finalPath)) {
+                throw new TransferException(
+                    'Failed to copy local stream to remote file: '
+                    . $finalPath . ' (rename of partial ' . $writePath . ' failed)',
+                );
+            }
+        } catch (\Throwable $e) {
+            $progress?->failed($e);
+            if ($useAtomic) {
+                $this->cleanupPartial($sftp, $writePath);
+            }
+
+            throw $e;
+        }
+
+        $progress?->completed($copied);
+        $this->log('info', 'SFTP upload-stream ok', [
+            'remote' => $finalPath,
+            'bytes' => $copied,
+            'duration_ms' => (int) ((microtime(true) - $started) * 1000),
+            'atomic' => $useAtomic,
+        ]);
+
+        return true;
+    }
+
+    /**
+     * @return int<0, max>
+     */
+    public function downloadStream(
+        string $remoteFilePath,
+        mixed $stream,
+        ?ProgressListenerInterface $progress = null,
+    ): int {
+        PathValidator::validateRemotePath($remoteFilePath);
+        if (! is_resource($stream)) {
+            throw new ConfigurationException('downloadStream(): $stream must be an open resource.');
+        }
+
+        return $this->retry(
+            'downloadStream',
+            fn(): int => $this->doDownloadStream($remoteFilePath, $stream, $progress),
+        );
+    }
+
+    /**
+     * @param resource $stream
+     * @return int<0, max>
+     */
+    private function doDownloadStream(
+        string $remoteFilePath,
+        mixed $stream,
+        ?ProgressListenerInterface $progress,
+    ): int {
+        $sftp = $this->requireSftp();
+
+        $remoteSize = $this->statSize($remoteFilePath);
+        if ($remoteSize === null) {
+            throw new TransferException('Remote file does not exist or no permissions to read: ' . $remoteFilePath);
+        }
+
+        $remoteUri = $this->ssh2->sftpStreamUri($sftp, $remoteFilePath);
+        $this->log('debug', 'SFTP download-stream start', [
+            'remote' => $remoteFilePath,
+            'size' => $remoteSize,
+        ]);
+        $started = microtime(true);
+        $progress?->started('downloadStream', $remoteSize);
+
+        $copied = 0;
+
+        try {
+            $remoteStream = @fopen($remoteUri, 'rb');
+            if ($remoteStream === false) {
+                throw new TransferException('Unable to open remote file: ' . $remoteFilePath);
+            }
+
+            try {
+                $copied = $this->copyWithProgress(
+                    $remoteStream,
+                    $stream,
+                    $progress,
+                    'Failed to copy remote stream to caller stream for: ' . $remoteFilePath,
+                );
+            } finally {
+                fclose($remoteStream);
+            }
+        } catch (\Throwable $e) {
+            $progress?->failed($e);
+
+            throw $e;
+        }
+
+        $progress?->completed($copied);
+        $this->log('info', 'SFTP download-stream ok', [
+            'remote' => $remoteFilePath,
+            'bytes' => $copied,
+            'duration_ms' => (int) ((microtime(true) - $started) * 1000),
+        ]);
+
+        return $copied;
+    }
+
+    public function resumeUpload(
+        string $localFilePath,
+        string $remoteFileName,
+        ?int $offset = null,
+        ?ProgressListenerInterface $progress = null,
+    ): self {
+        $this->retry(
+            'resumeUpload',
+            fn(): true => $this->doResumeUpload($localFilePath, $remoteFileName, $offset, $progress),
+        );
+
+        return $this;
+    }
+
+    private function doResumeUpload(
+        string $localFilePath,
+        string $remoteFileName,
+        ?int $offset,
+        ?ProgressListenerInterface $progress,
+    ): true {
         $sftp = $this->requireSftp();
 
         if (! is_file($localFilePath)) {
@@ -560,80 +823,93 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
             ));
         }
 
+        // filesize() returns false on stat failure; fall back to unknown total.
+        $startedSize = $localSize === false ? null : max(0, $localSize);
         $this->log('debug', 'SFTP resume upload start', [
             'local' => $localFilePath,
             'remote' => $finalPath,
             'partial' => $partialPath,
             'offset' => $offset,
-            'size' => $localSize === false ? null : $localSize,
+            'size' => $startedSize,
         ]);
         $started = microtime(true);
+        $progress?->started('resumeUpload', $startedSize);
 
-        // NOTE: deliberately no try/catch+unlink here. Failure during resume
-        // must preserve the partial so the next resumeUpload() call can pick
-        // up where this attempt left off.
-        $localStream = @fopen($localFilePath, 'rb');
-        if ($localStream === false) {
-            throw new TransferException('Unable to open local file for reading: ' . $localFilePath);
-        }
-
+        // NOTE: deliberately no partial-unlink in this catch arm. Resume
+        // failures must preserve the partial so the next resumeUpload()
+        // call can pick up where this attempt left off.
         try {
-            if ($offset > 0) {
-                self::seekOrThrow($localStream, $offset, 'local file', $localFilePath);
-            }
-
-            // Open the partial preserving existing bytes when resuming, and
-            // create-or-truncate when starting fresh. libssh2's SFTP wrapper
-            // accepts mode `ab` for open but its fwrite returns false on
-            // append, so we use `r+b` + explicit seek when $offset > 0
-            // (preserves the bytes, no zero-padding) and `wb` when $offset == 0
-            // (fresh partial, overwrites any stale one from a previous attempt).
-            $partialMode = $offset > 0 ? 'r+b' : 'wb';
-            $remoteStream = @fopen($partialUri, $partialMode);
-            if ($remoteStream === false) {
-                throw new TransferException('Unable to open remote file for writing: ' . $partialPath);
+            $localStream = @fopen($localFilePath, 'rb');
+            if ($localStream === false) {
+                throw new TransferException('Unable to open local file for reading: ' . $localFilePath);
             }
 
             try {
                 if ($offset > 0) {
-                    self::seekOrThrow($remoteStream, $offset, 'remote partial', $partialPath);
+                    self::seekOrThrow($localStream, $offset, 'local file', $localFilePath);
                 }
-                $copied = stream_copy_to_stream($localStream, $remoteStream);
-                if ($copied === false) {
-                    throw new TransferException('Failed to copy local stream to remote file: ' . $partialPath);
+
+                // Open the partial preserving existing bytes when resuming,
+                // and create-or-truncate when starting fresh. libssh2's SFTP
+                // wrapper accepts mode `ab` for open but its fwrite returns
+                // false on append, so we use `r+b` + explicit seek when
+                // $offset > 0 (preserves the bytes, no zero-padding) and
+                // `wb` when $offset == 0 (fresh partial, overwrites any
+                // stale one from a previous attempt).
+                $partialMode = $offset > 0 ? 'r+b' : 'wb';
+                $remoteStream = @fopen($partialUri, $partialMode);
+                if ($remoteStream === false) {
+                    throw new TransferException('Unable to open remote file for writing: ' . $partialPath);
+                }
+
+                try {
+                    if ($offset > 0) {
+                        self::seekOrThrow($remoteStream, $offset, 'remote partial', $partialPath);
+                    }
+                    $this->copyWithProgress(
+                        $localStream,
+                        $remoteStream,
+                        $progress,
+                        'Failed to copy local stream to remote file: ' . $partialPath,
+                    );
+                } finally {
+                    fclose($remoteStream);
                 }
             } finally {
-                fclose($remoteStream);
+                fclose($localStream);
             }
-        } finally {
-            fclose($localStream);
-        }
 
-        if ($this->fileSizeVerificationEnabled && $localSize !== false) {
-            $partialSize = $this->statSize($partialPath);
-            if ($partialSize !== $localSize) {
-                throw new TransferException(\sprintf(
-                    'File size mismatch after resume upload of %s: local=%d, partial=%d',
-                    $localFilePath,
-                    $localSize,
-                    $partialSize ?? -1,
-                ));
+            if ($this->fileSizeVerificationEnabled && $localSize !== false) {
+                $partialSize = $this->statSize($partialPath);
+                if ($partialSize !== $localSize) {
+                    throw new TransferException(\sprintf(
+                        'File size mismatch after resume upload of %s: local=%d, partial=%d',
+                        $localFilePath,
+                        $localSize,
+                        $partialSize ?? -1,
+                    ));
+                }
             }
+
+            if (! $this->ssh2->sftpRename($sftp, $partialPath, $finalPath)) {
+                // Same retryable wording as the upload rename failure — the
+                // partial stays intact for the next attempt.
+                throw new TransferException(
+                    'Failed to copy local stream to remote file: '
+                    . $finalPath . ' (rename of partial ' . $partialPath . ' failed)',
+                );
+            }
+        } catch (\Throwable $e) {
+            $progress?->failed($e);
+
+            throw $e;
         }
 
-        if (! $this->ssh2->sftpRename($sftp, $partialPath, $finalPath)) {
-            // Same retryable wording as the upload rename failure — the
-            // partial stays intact for the next attempt.
-            throw new TransferException(
-                'Failed to copy local stream to remote file: '
-                . $finalPath . ' (rename of partial ' . $partialPath . ' failed)',
-            );
-        }
-
+        $progress?->completed($startedSize ?? 0);
         $this->log('info', 'SFTP resume upload ok', [
             'local' => $localFilePath,
             'remote' => $finalPath,
-            'bytes' => $localSize === false ? null : $localSize,
+            'bytes' => $startedSize,
             'resumed_from' => $offset,
             'duration_ms' => (int) ((microtime(true) - $started) * 1000),
         ]);
@@ -641,20 +917,28 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
         return true;
     }
 
-    public function resumeDownload(string $remoteFilePath, string $localFileName, ?int $offset = null): self
-    {
+    public function resumeDownload(
+        string $remoteFilePath,
+        string $localFileName,
+        ?int $offset = null,
+        ?ProgressListenerInterface $progress = null,
+    ): self {
         PathValidator::validateRemotePath($remoteFilePath);
 
         $this->retry(
             'resumeDownload',
-            fn(): true => $this->doResumeDownload($remoteFilePath, $localFileName, $offset),
+            fn(): true => $this->doResumeDownload($remoteFilePath, $localFileName, $offset, $progress),
         );
 
         return $this;
     }
 
-    private function doResumeDownload(string $remoteFilePath, string $localFileName, ?int $offset): true
-    {
+    private function doResumeDownload(
+        string $remoteFilePath,
+        string $localFileName,
+        ?int $offset,
+        ?ProgressListenerInterface $progress,
+    ): true {
         $sftp = $this->requireSftp();
 
         $savePath = $this->localPrefix . $localFileName;
@@ -689,7 +973,10 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
 
         if ($offset === $remoteSize) {
             // Already complete on disk. Skip the I/O so the resume call is a
-            // safe no-op when callers retry after a previous success.
+            // safe no-op when callers retry after a previous success. Fire
+            // started + completed so listeners still see a clean lifecycle.
+            $progress?->started('resumeDownload', $remoteSize);
+            $progress?->completed($remoteSize);
             $this->log('info', 'SFTP resume download noop', [
                 'remote' => $remoteFilePath,
                 'local' => $savePath,
@@ -699,47 +986,58 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
             return true;
         }
 
-        $remoteUri = $this->ssh2->sftpStreamUri($sftp, $remoteFilePath);
-        $remoteStream = @fopen($remoteUri, 'rb');
-        if ($remoteStream === false) {
-            throw new TransferException('Unable to open remote file: ' . $remoteFilePath);
-        }
+        $progress?->started('resumeDownload', $remoteSize);
 
         try {
-            if ($offset > 0) {
-                self::seekOrThrow($remoteStream, $offset, 'remote stream', $remoteFilePath);
-            }
-
-            $localStream = @fopen($savePath, $offset > 0 ? 'ab' : 'wb');
-            if ($localStream === false) {
-                throw new TransferException('Unable to open local file for writing: ' . $savePath);
+            $remoteUri = $this->ssh2->sftpStreamUri($sftp, $remoteFilePath);
+            $remoteStream = @fopen($remoteUri, 'rb');
+            if ($remoteStream === false) {
+                throw new TransferException('Unable to open remote file: ' . $remoteFilePath);
             }
 
             try {
-                $copied = stream_copy_to_stream($remoteStream, $localStream);
-                if ($copied === false) {
-                    throw new TransferException('Failed to copy remote stream to local file: ' . $savePath);
+                if ($offset > 0) {
+                    self::seekOrThrow($remoteStream, $offset, 'remote stream', $remoteFilePath);
+                }
+
+                $localStream = @fopen($savePath, $offset > 0 ? 'ab' : 'wb');
+                if ($localStream === false) {
+                    throw new TransferException('Unable to open local file for writing: ' . $savePath);
+                }
+
+                try {
+                    $this->copyWithProgress(
+                        $remoteStream,
+                        $localStream,
+                        $progress,
+                        'Failed to copy remote stream to local file: ' . $savePath,
+                    );
+                } finally {
+                    fclose($localStream);
                 }
             } finally {
-                fclose($localStream);
+                fclose($remoteStream);
             }
-        } finally {
-            fclose($remoteStream);
+
+            if ($this->fileSizeVerificationEnabled) {
+                clearstatcache(true, $savePath);
+                $localSize = filesize($savePath);
+                if ($localSize !== $remoteSize) {
+                    throw new TransferException(\sprintf(
+                        'File size mismatch after resume download of %s: remote=%d, local=%d',
+                        $remoteFilePath,
+                        $remoteSize,
+                        $localSize,
+                    ));
+                }
+            }
+        } catch (\Throwable $e) {
+            $progress?->failed($e);
+
+            throw $e;
         }
 
-        if ($this->fileSizeVerificationEnabled) {
-            clearstatcache(true, $savePath);
-            $localSize = filesize($savePath);
-            if ($localSize !== $remoteSize) {
-                throw new TransferException(\sprintf(
-                    'File size mismatch after resume download of %s: remote=%d, local=%d',
-                    $remoteFilePath,
-                    $remoteSize,
-                    $localSize,
-                ));
-            }
-        }
-
+        $progress?->completed($remoteSize);
         $this->log('info', 'SFTP resume download ok', [
             'remote' => $remoteFilePath,
             'local' => $savePath,
@@ -769,6 +1067,48 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
                 'exception' => $e::class,
                 'reason' => $e->getMessage(),
             ]);
+        }
+    }
+
+    /**
+     * Chunked stream copy with progress emission. Replaces stream_copy_to_stream
+     * for all transfer paths so callers can observe per-chunk progress and so
+     * the chunk size is tunable.
+     *
+     * Deliberately does NOT call started() / completed() / failed() — the
+     * lifecycle terminator depends on whether the *whole* operation (including
+     * size verification, rename, etc.) succeeded, and only the caller knows.
+     * Helper just emits progress() per chunk.
+     *
+     * Avoids feof() because some libssh2 stream wrappers return true on it
+     * incorrectly. fread === '' is a more reliable EOF signal.
+     *
+     * @param resource $from
+     * @param resource $to
+     * @return int<0, max> total bytes copied
+     */
+    private function copyWithProgress(
+        mixed $from,
+        mixed $to,
+        ?ProgressListenerInterface $progress,
+        string $failureMessage,
+    ): int {
+        $copied = 0;
+        while (true) {
+            $buf = @fread($from, $this->chunkSize);
+            if ($buf === false) {
+                throw new TransferException($failureMessage);
+            }
+            if ($buf === '') {
+                return $copied;
+            }
+            $written = @fwrite($to, $buf);
+            $bufLen = \strlen($buf);
+            if ($written === false || $written < $bufLen) {
+                throw new TransferException($failureMessage);
+            }
+            $copied += $written;
+            $progress?->progress($copied);
         }
     }
 
@@ -1253,6 +1593,9 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
         return $pubkeyOk && $passwordOk;
     }
 
+    /**
+     * @return int<0, max>|null
+     */
     private function statSize(string $remotePath): ?int
     {
         $sftp = $this->requireSftp();
@@ -1261,7 +1604,11 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
             return null;
         }
 
-        return $stat['size'];
+        // SFTP / POSIX file sizes are always non-negative, but the stub-derived
+        // type for ssh2_sftp_stat is plain int. Clamp so PHPStan can prove the
+        // non-negative invariant for downstream callers (progress listener
+        // expects int<0, max>).
+        return max(0, $stat['size']);
     }
 
     /**
