@@ -17,10 +17,12 @@ final readonly class DownloadResult
      * @param int<0, max> $filesTransferred
      * @param int<0, max> $bytesTransferred
      * @param list<string> $skipped Absolute REMOTE paths the iteration intentionally bypassed.
+     * @param list<DirectoryFailure> $failures Per-entry failures, populated only in best-effort mode.
      */
     public function __construct(
         public int $filesTransferred,
         public int $bytesTransferred,
         public array $skipped = [],
+        public array $failures = [],
     ) {}
 }

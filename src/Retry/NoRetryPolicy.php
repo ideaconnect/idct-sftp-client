@@ -15,6 +15,11 @@ use IDCT\Networking\Ssh\Exception\SshException;
  */
 final class NoRetryPolicy implements RetryPolicyInterface
 {
+    /**
+     * Returns 0 unconditionally — the contract sentinel for
+     * "abort and rethrow". `$attempt` and `$lastError` are accepted
+     * for interface conformance and ignored.
+     */
     public function nextDelayMs(int $attempt, SshException $lastError): int
     {
         return 0;

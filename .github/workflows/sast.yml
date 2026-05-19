@@ -1,0 +1,44 @@
+name: SAST
+
+# Static-application security testing. Runs Psalm in taint-analysis mode
+# alongside PHPStan (which we already run in ci.yml). The two are
+# complementary: PHPStan catches type bugs; Psalm's taint mode catches
+# untrusted-input flow into sensitive sinks (path joins, command exec,
+# log records that might leak secrets).
+#
+# Psalm is pulled as a standalone `psalm.phar` rather than a composer
+# dep because Psalm 5.x hard-pins `nikic/php-parser ^4.x`, which
+# conflicts with PHPUnit 11's `^5.x` requirement. The phar dodges the
+# dep resolver entirely.
+
+on:
+  push:
+    branches: [master, main, "modernize/**"]
+  pull_request:
+
+jobs:
+  psalm:
+    name: Psalm taint analysis
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.2"
+          extensions: ssh2, mbstring
+          coverage: none
+      - name: Composer install
+        run: composer install --no-progress --no-interaction --prefer-dist
+      - name: Download Psalm phar
+        run: |
+          curl -sSL -o psalm.phar \
+            https://github.com/vimeo/psalm/releases/download/5.26.1/psalm.phar
+          chmod +x psalm.phar
+      - name: Generate psalm baseline (first run produces config)
+        run: |
+          if [ ! -f psalm.xml ] && [ ! -f psalm.xml.dist ]; then
+            php psalm.phar --init src/ 3
+          fi
+      - name: Psalm (errors + taint)
+        run: php psalm.phar --no-progress --output-format=github --taint-analysis

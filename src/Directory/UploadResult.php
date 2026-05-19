@@ -19,10 +19,12 @@ final readonly class UploadResult
      * @param int<0, max> $filesTransferred
      * @param int<0, max> $bytesTransferred
      * @param list<string> $skipped Absolute LOCAL paths the iteration intentionally bypassed.
+     * @param list<DirectoryFailure> $failures Per-entry failures, populated only in best-effort mode.
      */
     public function __construct(
         public int $filesTransferred,
         public int $bytesTransferred,
         public array $skipped = [],
+        public array $failures = [],
     ) {}
 }

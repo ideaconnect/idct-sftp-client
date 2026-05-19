@@ -22,7 +22,19 @@ use SensitiveParameter;
 final class Credentials implements CredentialsInterface
 {
     /**
-     * Use the named factories; the constructor is internal to this class.
+     * Use the named factories — the constructor is private so an
+     * AuthMode-incompatible field combination can't be constructed
+     * from outside this class.
+     *
+     * @param AuthMode    $mode       Which auth strategy is in play.
+     * @param string      $username   SSH login; rejected if empty.
+     * @param string|null $password   Plain-text password; required for `Password` / `Both`.
+     * @param string|null $publicKey  Absolute path to the public-key file; required for `PublicKey` / `Both`.
+     * @param string|null $privateKey Absolute path to the matching private key; required when $publicKey is.
+     * @param string|null $passphrase Optional passphrase decrypting $privateKey.
+     *
+     * @throws ConfigurationException empty username, or a key-based mode
+     *         pointing at a file that doesn't exist on the local FS.
      */
     private function __construct(
         public readonly AuthMode $mode,
@@ -51,6 +63,11 @@ final class Credentials implements CredentialsInterface
         }
     }
 
+    /**
+     * Factory for password authentication.
+     *
+     * @throws ConfigurationException on empty username.
+     */
     public static function withPassword(
         string $username,
         #[SensitiveParameter]
@@ -59,6 +76,15 @@ final class Credentials implements CredentialsInterface
         return new self(AuthMode::Password, $username, password: $password);
     }
 
+    /**
+     * Factory for public-key authentication.
+     *
+     * @param string      $publicKey  Absolute path to the public key file (OpenSSH `id_rsa.pub` format).
+     * @param string      $privateKey Absolute path to the matching private key.
+     * @param string|null $passphrase Optional passphrase for the private key.
+     *
+     * @throws ConfigurationException on empty username or missing key files.
+     */
     public static function withPublicKey(
         string $username,
         string $publicKey,
@@ -75,6 +101,12 @@ final class Credentials implements CredentialsInterface
         );
     }
 
+    /**
+     * Factory for multi-factor (publickey + password) authentication.
+     * Both legs must succeed for the connect to be accepted.
+     *
+     * @throws ConfigurationException on empty username or missing key files.
+     */
     public static function withBoth(
         string $username,
         #[SensitiveParameter]
@@ -94,42 +126,60 @@ final class Credentials implements CredentialsInterface
         );
     }
 
+    /**
+     * Factory for anonymous authentication (`ssh2_auth_none`). Sends
+     * the username only; the server's policy decides whether to grant
+     * access without proof.
+     *
+     * @throws ConfigurationException on empty username.
+     */
     public static function withNone(string $username): self
     {
         return new self(AuthMode::None, $username);
     }
 
+    /** {@inheritDoc} */
     public function getMode(): AuthMode
     {
         return $this->mode;
     }
 
+    /** {@inheritDoc} */
     public function getUsername(): string
     {
         return $this->username;
     }
 
+    /** {@inheritDoc} */
     public function getPassword(): ?string
     {
         return $this->password;
     }
 
+    /** {@inheritDoc} */
     public function getPublicKey(): ?string
     {
         return $this->publicKey;
     }
 
+    /** {@inheritDoc} */
     public function getPrivateKey(): ?string
     {
         return $this->privateKey;
     }
 
+    /** {@inheritDoc} */
     public function getPassphrase(): ?string
     {
         return $this->passphrase;
     }
 
     /**
+     * Sensitive-value redaction for `var_dump` / `print_r` / `error_log`
+     * output. Password and passphrase are masked when present (so the
+     * mask itself signals "yes, there's a secret here" without
+     * leaking the value).
+     *
      * @return array<string, string|null>
      */
     public function __debugInfo(): array

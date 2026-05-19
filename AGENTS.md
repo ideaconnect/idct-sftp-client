@@ -7,44 +7,78 @@ Onboarding notes for AI agents (and humans) picking up work on this repo.
 **Active backlog: Asana, under `MYID-4` ("Release idct-sftp-client v1.0")**
 GID `1214894683655126` — [open in Asana](https://app.asana.com/1/1214897106264347/project/1214894683655121/task/1214894683655126).
 
-The 12 subtasks of MYID-4 are the production-grade plan (one subtask per
-phase, in execution order). Each subtask's description summarises scope
-and acceptance criteria; the full rationale lives in
-[PRODUCTION_GRADE.md](PRODUCTION_GRADE.md).
+The 1.1 line was developed as a sequence of phases (P1–P12) each tracked
+as a subtask under MYID-4. By the time you're reading this every P1–P11
+phase is shipped (see [CHANGELOG.md](CHANGELOG.md) for what landed when);
+P12 (richer docs / cookbook / API reference on GitHub Pages) remains the
+only open phase.
 
 If you have the Asana MCP wired up, prefer fetching the subtask list via
-`search_tasks` / `get_task task_id=1214894683655126` over reading
-PRODUCTION_GRADE.md — the doc is the *plan*, the tasks are the *status*.
+`search_tasks` / `get_task task_id=1214894683655126` over guessing — the
+tasks are the live status of what's done, deferred, or in flight.
 
-| Phase | What | Plan §        |
-|------:|------|---------------|
-| P1    | Public contract surface (interfaces + single SshException root) | §P1 |
-| P2    | Path safety & input validation                   | §P2 |
-| P7    | PSR-3 logger integration                         | §P7 |
-| P5    | Retry policy & connection lifecycle              | §P5 |
-| P4    | Atomic transfers & resume                        | §P4 |
-| P6    | Streaming & progress callbacks                   | §P6 |
-| P3    | Recursive directory operations                   | §P3 |
-| P8    | Security hardening (round 2)                     | §P8 |
-| P9    | Alternative backend evaluation (deferred)        | §P9 |
-| P11   | Test additions (multi-server, soak, mutation)    | §P11 |
-| P10   | Operational maturity (release automation, etc.)  | §P10 |
-| P12   | Documentation                                    | §P12 |
+Phase summary (history; not a roadmap):
 
-P13 in the doc is the **explicit out-of-scope list** — no Asana task,
-deliberate non-goals (async, framework adapters, OpenTelemetry, connection
-pooling). Read it before proposing one of those.
+| Phase | What                                             |
+|------:|--------------------------------------------------|
+| P1    | Public contract surface (interfaces + single SshException root) |
+| P2    | Path safety & input validation (PathValidator threat matrix T1–T6) |
+| P3    | Recursive directory operations (walk / upload / download / removeTree) |
+| P4    | Atomic transfers & resume                        |
+| P5    | Retry policy, lazy reconnect, ping()             |
+| P6    | Streaming sources/sinks & progress callbacks     |
+| P7    | PSR-3 logger integration + redaction lint        |
+| P8    | Security hardening (known_hosts, SecurityProfile, AuthFailureRateLimiter, CredentialsLoader) |
+| P10   | Operational maturity (CONTRIBUTING, COMPATIBILITY, issue/PR templates, dependabot, release.yml) |
+| P11   | Test additions (Infection in CI; multi-server matrix; toxiproxy fault injection; large-file soak) |
+| P12   | Documentation (cookbook, troubleshooting, perf) — **open** |
+
+### Explicit non-goals (don't propose without reopening the discussion)
+
+| Want                              | Why it's out of scope                                                                    |
+|-----------------------------------|------------------------------------------------------------------------------------------|
+| Async / event-loop transfers      | Separate package `idct/sftp-client-async` (amphp or revolt) — different concurrency model |
+| Symfony bundle / Laravel provider | Separate `idct/sftp-client-bundle` / `idct/sftp-client-laravel`                          |
+| OpenTelemetry tracing             | Decorate the PSR-3 logger from P7; downstream concern                                    |
+| Connection pooling                | Real demand is rare and adds significant state complexity — document create-use-close    |
+| FTP / FTPS support                | Different protocol family — different library                                            |
+| GUI / CLI tool                    | This is a library                                                                        |
+| Pure-PHP backend (phpseclib)      | Tried during P1; reverted. Reopen only if ext-ssh2 itself becomes unmaintained           |
+| `CODE_OF_CONDUCT.md`              | Maintainer preference; do not add                                                        |
 
 ## How the repo got here
 
-[MODERNIZE.md](MODERNIZE.md) is the historical plan that took the library
-from 0.x to 1.0 — bug fix table (B1–B12), security items (S1–S5), and a
-final §10 "What the plan got wrong" recording the four reality checks
-that bit during implementation (ext-ssh2 1.4 still returns resources, not
-objects; PHPStan stubFiles don't override bundled JetBrains stubs;
-`@`-suppression at the ext-ssh2 boundary is necessary, not lazy;
-atmoz/sftp mounts volumes as root). Read §10 before changing
-`src/Ssh2Functions.php` or `tests/stubs/ssh2.stub.php`.
+The 0.x line was a thin wrapper around `ext-ssh2` with bare `\Exception`
+throws, untyped state, and a `close()` that ran `ssh2_exec($conn, 'logout')`
+(never disconnected; leaked the channel). 1.0 was a ground-up rewrite —
+typed exceptions, PHP 8.2+, `ext-ssh2 >= 1.4`, full test coverage —
+documented in [CHANGELOG.md](CHANGELOG.md) under "1.0.0 — 2026-05-17".
+
+### Four reality checks worth knowing before touching the ext-ssh2 layer
+
+These bit during the 1.0 rewrite. Read before changing
+[`src/Ssh2/Ssh2Functions.php`](src/Ssh2/Ssh2Functions.php) or
+[`tests/stubs/ssh2.stub.php`](tests/stubs/ssh2.stub.php):
+
+1. **ext-ssh2 1.4.x still returns PHP `resource`s, not opaque objects.**
+   `var_dump(ssh2_connect(...))` shows `resource(SSH2 Session)`. The
+   `intval($sftp)` workaround in `sftpStreamUri()` is correct under the
+   current regime AND a hypothetical future opaque-object regime — keep it.
+2. **PHPStan 2.x's `stubFiles:` does not override bundled JetBrains stubs
+   for ext-ssh2.** Verified with a probe function in the user stub that
+   PHPStan continued to report as "function not found". The custom stub
+   exists for IDE resolution; don't plan around stub overrides. New
+   ext-ssh2 typing needs `@phpstan-ignore-next-line` at the wrapper.
+3. **`@`-suppression at the ext-ssh2 boundary is necessary, not lazy.**
+   ext-ssh2 emits `E_WARNING` on every recoverable false-return (auth
+   rejected, file missing, peer gone). PHPUnit + Behat convert warnings
+   to exceptions, which would short-circuit the typed exceptions the
+   wrapper exists to throw. `@` belongs ONLY inside `Ssh2Functions`; the
+   layers above it must surface typed exceptions, not raw warnings.
+4. **`atmoz/sftp` mounts volumes as root**, not as the configured user —
+   `/etc/sftp.d/chown.sh` (one-line script chowning `/home/tester/data`
+   to uid 1001) is required for any write-side test to pass. Lives at
+   `tests/functional/fixtures/sftp.d/chown.sh`.
 
 ## Running things locally
 
@@ -115,6 +149,7 @@ src/
 | [`src/Exception/`](src/Exception/) | Single concrete hierarchy. Every library exception extends [`SshException`](src/Exception/SshException.php), so `catch (SshException $e)` catches anything this library throws. No marker interfaces — narrow with the concrete leaves (`AuthenticationException`, `ConfigurationException`, `ConnectionException`, `RemoteFilesystemException`, `TransferException`, `InvalidPathException`) when you need to react differently to different failures. Kept flat (not distributed under each domain) so the single-root hierarchy is visible at a glance. |
 | [`tests/unit/SftpClientTest.php`](tests/unit/SftpClientTest.php) | Main test class (mocks adapter, uses `FakeSftpStreamWrapper`). |
 | [`tests/functional/`](tests/functional/) | Behat suite + docker fixture. |
-| [`PRODUCTION_GRADE.md`](PRODUCTION_GRADE.md) | What to build next. |
-| [`MODERNIZE.md`](MODERNIZE.md) | How we got here. |
-| [`CHANGELOG.md`](CHANGELOG.md) | What 1.0 changed. |
+| [`CHANGELOG.md`](CHANGELOG.md) | Per-version history (what 1.0 changed, what each 1.1 phase shipped, deltas vs. the original plan). |
+| [`SECURITY.md`](SECURITY.md) | Disclosure policy, supported-version matrix, hardening already in place. |
+| [`COMPATIBILITY.md`](COMPATIBILITY.md) | SemVer policy (covered surface vs. internal, deprecation policy). |
+| [`CONTRIBUTING.md`](CONTRIBUTING.md) | Local dev setup, test layers, PR checklist. |

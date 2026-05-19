@@ -90,6 +90,17 @@ interface Ssh2FunctionsInterface
     /** @param resource $session */
     public function scpSend(mixed $session, string $localPath, string $remotePath, int $mode): bool;
 
+    /**
+     * Execute a remote command and return its stdout stream. Used by
+     * the shell-based remote checksum verifier. `$session` is the same
+     * resource shape produced by {@see connect()}; typed as `mixed` so
+     * callers don't have to plumb a phpstan resource hint through their
+     * code (the runtime check is "is it usable by libssh2").
+     *
+     * @return resource|false
+     */
+    public function exec(mixed $session, string $command): mixed;
+
     /** @param resource $session */
     public function disconnect(mixed $session): bool;
 

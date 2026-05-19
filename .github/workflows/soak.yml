@@ -1,0 +1,56 @@
+name: Soak
+
+# Manual-trigger only. The full plan target is a 24h run; GitHub-hosted
+# runners cap at 6h per job. The default below runs a 15-minute smoke;
+# override `duration_seconds` for longer runs. Schedule the 24h variant
+# on a self-hosted runner if/when one's available.
+on:
+  workflow_dispatch:
+    inputs:
+      duration_seconds:
+        description: "How long to run the soak (seconds). Default 900 (15min smoke)."
+        required: false
+        default: "900"
+      period_seconds:
+        description: "Seconds between transfer cycles."
+        required: false
+        default: "30"
+
+jobs:
+  soak:
+    name: 1 MiB transfer soak
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.2"
+          extensions: ssh2, mbstring
+          coverage: none
+      - name: Composer install
+        run: composer install --no-progress --no-interaction --prefer-dist
+      - name: Generate fixture SSH keypair
+        run: |
+          mkdir -p tests/functional/fixtures/keys
+          ssh-keygen -t rsa -b 2048 -N "" -f tests/functional/fixtures/keys/id_rsa -C "idct-sftp-soak"
+      - name: Start SFTP fixture (atmoz only)
+        run: docker compose -f tests/functional/docker-compose.yml up -d --wait sftp
+      - name: Soak
+        env:
+          SFTP_PORT: "2222"
+        run: |
+          php tests/soak/soak.php \
+            "${{ github.event.inputs.duration_seconds }}" \
+            "${{ github.event.inputs.period_seconds }}"
+      - name: Upload soak summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: soak-summary
+          path: tests/soak/build/summary.json
+          if-no-files-found: ignore
+      - name: Stop SFTP fixture
+        if: always()
+        run: docker compose -f tests/functional/docker-compose.yml down -v

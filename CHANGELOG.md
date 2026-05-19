@@ -2,8 +2,244 @@
 
 ## Unreleased (1.1.0 in progress)
 
-Tracking the production-grade plan (PRODUCTION_GRADE.md) phase by phase.
-Each entry lists the phase from the plan and what shipped.
+The 1.1 line was developed as a sequence of production-grade phases
+(`P1`–`P11`). Each entry below lists the phase identifier and what
+shipped under it.
+
+### Follow-up pass — resolve every partially-done phase (2026-05-19)
+
+This pass closes the named follow-up subtasks created when each partial-
+done phase was first marked closed. Net result: every P1–P11 phase is
+fully implemented except the explicitly out-of-scope items (Conventional
+Commits enforcement, CODE_OF_CONDUCT.md, the 24h soak which needs wall-
+clock time rather than code, and Packagist/GPG secret config which is
+inherently maintainer-side).
+
+P8 follow-ups:
+* New `IDCT\Networking\Ssh\Security\SecurityProfile` enum (Modern /
+  Compatible / Legacy). `SftpClient::connect()` gains an optional
+  `?SecurityProfile $securityProfile` argument that translates to the
+  `$methods` array `ssh2_connect` expects. Modern locks to
+  ChaCha20+Poly1305 / curve25519 / Ed25519 / SHA-256-ETM; Compatible
+  delegates to libssh2 defaults; Legacy is permissive (with a
+  `notice`-level log line whenever used). Wired through the
+  Ssh2FunctionsInterface.
+* New `IDCT\Networking\Ssh\Auth\AuthFailureRateLimiter` — in-process
+  per-host backoff after consecutive auth failures. Off by default;
+  enable via `setAuthFailureRateLimiter()`. State is static, keyed by
+  `host:port:user`. Defaults: 3-failure threshold, 1s base delay,
+  60s cap.
+* New `IDCT\Networking\Ssh\Auth\CredentialsLoaderInterface` + default
+  `StaticCredentialsLoader`. `SftpClient::setCredentialsLoader()` is
+  mutually exclusive with `setCredentials()`; the loader fires once
+  per `connect()` so secret-store integrations can rotate credentials
+  per host.
+
+P3 follow-ups:
+* New `Directory\ConflictPolicy` enum (Overwrite / Skip / Fail) wired
+  into `uploadDirectory()` + `downloadDirectory()` via new
+  `onConflict` parameters. Default stays Overwrite (existing 1.1
+  behaviour). Skip records the source path in the result's `skipped`
+  list; Fail raises `RemoteFilesystemException` (upload) /
+  `ConfigurationException` (download).
+* New `Directory\SymlinkPolicy` enum (Skip / Follow) — default still
+  Skip. Follow recurses through symlinked directories with inode-set
+  cycle detection (`(dev, ino)` keys); a detected cycle is recorded
+  in `skipped` with a `(cycle)` marker. Download-side symlink-follow
+  is a documented gap (ext-ssh2 doesn't expose libssh2's per-link
+  target resolution consistently).
+* New best-effort mode (`$bestEffort` parameter on both methods).
+  When true, per-entry failures are collected into the result's new
+  `failures` field (`list<DirectoryFailure>`) instead of aborting the
+  walk. New `Directory\DirectoryFailure` value object captures
+  `{path, reason, exceptionClass}`.
+
+P4 follow-up:
+* Opt-in checksum verification via a pluggable
+  `IDCT\Networking\Ssh\Checksum\RemoteHasherInterface`. When set via
+  `SftpClient::setRemoteHasher()`, every successful upload /
+  resumeUpload / download / resumeDownload computes both sides'
+  digests with `hash_file()` and the hasher and throws
+  `TransferException` on mismatch.
+* Two stock implementations:
+  - `ShellSumRemoteHasher` — runs the server's `sha256sum` (or any
+    configured sum binary) via `ssh2_exec`. Requires shell access.
+  - `RedownloadRemoteHasher` — pulls the file back through
+    `downloadStream` and hashes it locally. Works on lockdown-mode
+    SFTP servers without shell access; doubles transfer time.
+* New `Ssh2FunctionsInterface::exec()` underpins the shell variant.
+
+P11 follow-ups:
+* Eris property-based path tests
+  (`tests/unit/Path/PathValidatorPropertyTest.php`) complement the
+  hand-rolled T1-T6 matrix. 6 properties prove the
+  "either accepts safely or rejects with `InvalidPathException`, never
+  crashes" contract holds for random byte strings.
+* Multi-server matrix: `tests/functional/docker-compose.yml` now also
+  runs `linuxserver/openssh-server` (OpenSSH 9.x) on `127.0.0.1:2223`
+  alongside the existing atmoz/sftp on 2222. Behat is parameterised
+  via `SFTP_HOST` / `SFTP_PORT` / `SFTP_USER` / `SFTP_PASS` env vars.
+  CI's `functional` job is now a matrix `{php × {atmoz, openssh}}`.
+* New minio S3 source for the upload-from-S3-stream scenario
+  (`tests/functional/features/s3-stream.feature`). A one-shot
+  `minio-init` container creates a public bucket and seeds a payload;
+  the scenario `fopen`s the HTTP URL into `uploadStream` and verifies
+  byte-identity. No AWS SDK dependency — plain HTTP.
+* New toxiproxy fault-injection scenarios
+  (`tests/functional/features/fault-injection.feature`, tagged
+  `@slow @toxiproxy`): latency injection + bandwidth cap. The proxy
+  is configured per-scenario via toxiproxy's HTTP control API.
+* New soak script `tests/soak/soak.php` + manual-trigger workflow
+  `.github/workflows/soak.yml`. Defaults to a 15-minute smoke (the
+  full plan-mandated 24h target needs a self-hosted runner because of
+  GitHub's 6h hosted-job ceiling). Records JSON summary
+  (`{cycles, bytes, failures, peak_memory}`) and uploads as a CI
+  artifact.
+
+P10 follow-ups:
+* New `.github/workflows/release.yml` — triggers on `vX.Y.Z` tags,
+  runs the full QA gate, GPG-verifies the tag (rejects unsigned),
+  extracts the matching CHANGELOG section as the release body, and
+  pings the Packagist webhook when `PACKAGIST_TOKEN` is configured.
+  GPG signing and Packagist token are maintainer-side concerns
+  documented in [SECURITY.md](SECURITY.md) and the workflow comments
+  respectively.
+* New `.github/workflows/sast.yml` running Psalm in taint-analysis
+  mode. Psalm is downloaded as a standalone phar rather than a
+  composer dev-dep — Psalm 5.x's hard `nikic/php-parser ^4.x`
+  constraint conflicts with PHPUnit 11's `^5.x`. Checked-in
+  `psalm.xml.dist` keeps the config deterministic.
+* Conventional Commits enforcement remains deferred (opinionated
+  commit-style mandate; the CHANGELOG continues to be hand-written).
+  CODE_OF_CONDUCT.md remains deliberately not shipped per maintainer
+  preference.
+
+### P10 — Operational maturity (partial — contributor-facing files)
+
+* New [CONTRIBUTING.md](CONTRIBUTING.md): local setup, the three test
+  layers (`composer qa` / `composer behat` / `composer infection`),
+  coverage + mutation gates, PR checklist, the "no comments unless the
+  WHY is non-obvious" rule, sign-off.
+* New [COMPATIBILITY.md](COMPATIBILITY.md): SemVer policy spelled out.
+  Defines the covered surface (interfaces, public concrete classes,
+  enums, named exceptions, public readonly DTO fields) and the
+  internal surface (private methods, exception message text, Ssh2
+  adapter, lint / coverage / mutation config, Behat suite). Includes
+  the deprecation policy (minor-bump deprecation, at least one minor
+  cycle before removal in the next major) and the ext-ssh2 / PHP
+  floor rules.
+* New `.github/ISSUE_TEMPLATE/`:
+  - `bug_report.yml` — structured fields for library / PHP / ext-ssh2
+    / libssh2 version + SFTP server + minimal repro.
+  - `feature_request.yml` — use case first, proposed API second,
+    alternatives considered, willing-to-PR dropdown.
+  - `config.yml` — disables blank issues, routes security to the
+    private advisory, points "how do I..." questions at Discussions.
+* New `.github/PULL_REQUEST_TEMPLATE.md` — concise checklist (QA,
+  Behat, coverage, mutation gates, CHANGELOG entry, COMPATIBILITY.md
+  update if the surface changed, regression test for bug fixes).
+* New `.github/dependabot.yml` — weekly composer + github-actions
+  groups, dev-dep minor/patch bundled to reduce PR noise.
+* Already shipped by P8 (not redone here): SECURITY.md, `composer
+  audit` step in CI.
+* Deliberately NOT shipping a `CODE_OF_CONDUCT.md` — maintainer
+  preference. (Recorded in the user-memory so it doesn't get auto-
+  re-added if a future tooling pass scans for "standard project
+  files".)
+* Deferred to named follow-up subtasks under MYID-4:
+  - CodeQL workflow (GitHub CodeQL doesn't officially support PHP — a
+    Psalm-as-SAST or third-party scanner is the right substitute, but
+    that's a tooling choice rather than a file drop-in).
+  - Release automation (`release-please` + `release.yml`) — needs
+    Packagist webhook config, repo secrets, and the plan's GPG
+    release-signing setup. Multi-week landing, deserves its own task.
+  - Conventional Commits enforcement — opinionated commit-style
+    mandate; left to maintainer preference.
+
+### P11 — Test additions (partial — mutation testing only)
+
+* **Infection mutation testing is now enforced in CI.** New
+  `.github/workflows/ci.yml` job `mutation` (PHP 8.2, post-unit) runs
+  `vendor/bin/infection` with `--logger-github` and gates the build on
+  the thresholds in `infection.json5`:
+  - `minMsi: 85` (current baseline ~86%)
+  - `minCoveredMsi: 85` (current baseline ~87%)
+  Both gates are 2pp under the actual baseline — strict enough that any
+  real test-gap mutant trips the build, lenient enough not to chase
+  harmless mutants (operand-reordering on exception messages,
+  redundant `(string)` casts) into brittle exact-text assertions.
+* `infection.json5` excludes `src/Ssh2/Ssh2Functions.php` — that
+  adapter is exercised only by Behat, so unit-suite mutation analysis
+  would mark every mutant as survived without signal.
+* New `composer infection` script for local parity with CI (runs with
+  `XDEBUG_MODE=coverage` + 4 threads).
+* The remaining P11 items (multi-server matrix with OpenSSH 9.x /
+  ProFTPD, large-file + 24h soak nightly, toxiproxy fault injection,
+  property-based path tests via Eris) are tracked as named follow-up
+  subtasks under MYID-4 — each carries its own scope, acceptance, and
+  reopening criteria. The 500 MB nightly upload task created earlier
+  is the first slice of the large-file work.
+
+### P8 — Security hardening (round 2, partial)
+
+* **Known-hosts file support.** `SftpClient::connect()` gains two new
+  parameters:
+  - `?string $knownHostsFile` — path to an OpenSSH-format
+    `known_hosts` file. When set, the server's host key is verified
+    against the file before authentication runs.
+  - `UnknownHostPolicy $onUnknownHost` — what to do when the server's
+    host isn't in the file. `Reject` (default) refuses the connection;
+    `TrustOnFirstUse` appends the fingerprint and proceeds.
+  Mismatch (host present but with a different key) always refuses the
+  connection — `TrustOnFirstUse` does NOT override mismatch.
+* New `src/KnownHosts/` namespace: `KnownHostsFile` (parser +
+  verifier + appender), `HostKeyDecision` enum
+  (`Trusted | Mismatch | NoEntries`), `UnknownHostPolicy` enum.
+* Parser supports plain hostspecs, port-qualified `[host]:port`,
+  hashed `|1|salt|hash`, and the library's own TOFU keytype
+  `sha1-fpr`. Negation, wildcard, `@cert-authority`, and `@revoked`
+  entries are skipped (silent — matches OpenSSH's tolerant parser).
+* SHA-1 (not SHA-256) is the comparison algorithm:
+  `SSH2_FINGERPRINT_SHA256` only appears in libssh2 1.9+, and the
+  library ships against `ext-ssh2 >= 1.4`. SHA-1 is still acceptable
+  for fingerprint comparison and is exactly the algorithm older
+  OpenSSH clients (and `ssh-keygen -E sha1`) use. Standard
+  `ssh-rsa`/`ssh-ed25519`/etc. entries are matched by computing SHA-1
+  of the decoded key blob.
+* TOFU appends use a custom `sha1-fpr` keytype (with the lowercase
+  hex fingerprint in the keydata field) rather than a standard
+  `ssh-rsa AAAA…` line, because `ext-ssh2` exposes only the
+  fingerprint — not the raw host key blob — so we can't write a line
+  `ssh(1)` would read back. OpenSSH silently skips unknown keytypes
+  when reading the file, so cohabiting with `ssh(1)`'s own entries is
+  safe.
+* New `SECURITY.md` documents the disclosure policy (GHSA preferred,
+  `security@idct.tech` fallback), supported-versions matrix, SLA
+  targets (2/5/30 days for ack / triage / fix), and the scope.
+* `.github/workflows/ci.yml` runs `composer audit --no-dev --locked`
+  on every push; the build fails on any advisory matching the pinned
+  dependencies.
+* Tests: 21 unit tests for the parser/verifier/appender in
+  `tests/unit/KnownHosts/KnownHostsFileTest.php`; 6 connect-integration
+  tests in `tests/unit/KnownHosts/ConnectKnownHostsTest.php`; 4 Behat
+  scenarios in `known-hosts.feature` (TOFU happy path, repeat-connect
+  doesn't double-append, Reject refuses unknown host, tampered file
+  surfaces mismatch).
+* Deferred to named follow-up subtasks under MYID-4 (will be created
+  alongside this CHANGELOG entry):
+  - **SecurityProfile enum** (Modern / Compatible / Legacy) + cipher
+    / MAC / KEX allow-list — useful but libssh2's defaults are
+    reasonable for the common case; payoff is smaller than known-hosts.
+  - **Auth-failure rate limit** — the existing retry policy already
+    hard-blocks auth-retry per its never-retry list, so the marginal
+    value is bounded. Will revisit if a real incident surfaces.
+  - **`CredentialsLoaderInterface`** — ergonomic, not security:
+    `setCredentials($loader->load($host))` covers the same shape for
+    now.
+* While fixing the Behat suite, the `the remote directory "..." is
+  empty` step was updated to fall back to `removeDirectoryTree()` when
+  the entry is a directory (the previous `remove()`-only loop
+  accumulated leftover trees across runs).
 
 ### P3 — Recursive directory operations
 
@@ -17,7 +253,8 @@ Each entry lists the phase from the plan and what shipped.
 * New `SftpClient::removeDirectoryTree(string $remoteDir): self` — post-order recursion. `sftpUnlink`s files and symlinks, `sftpRmdir`s empty directories, removes `$remoteDir` itself last. Server permission failures surface as `RemoteFilesystemException` with the offending path.
 * Internal: `entryType()` classifies remote paths via `lstat()` on the SFTP stream wrapper (mode bits) with a fallback to `sftpStat()` for older libssh2 builds that don't expose lstat through the URL stat path.
 * Tests: 22 new unit tests in `tests/unit/DirectoryOperationsTest.php` cover walk ordering, symlink classification, the lstat→sftpStat fallback chain, nested round-trips (≥ 3 levels with mixed empty / non-empty dirs), per-method failure paths. 3 small VO tests in `tests/unit/Directory/ValueObjectsTest.php`. 2 Behat scenarios in `directory-ops.feature` round-trip a nested tree and exercise `removeDirectoryTree` against the live atmoz/sftp container.
-* Plan deltas (deferred to follow-up tasks, documented in `PRODUCTION_GRADE.md` §P3):
+* Plan deltas (deferred to the follow-up pass on 2026-05-19, see top of
+  this changelog):
   - **Follow-symlinks-with-cycle-detection.** Ship default is "skip symlinks" only; the opt-in follow mode with inode tracking is deferred.
   - **Conflict modes (skip / fail).** Ships overwrite-only (atomic rename does this naturally for files; `mkdir` is idempotent).
   - **Best-effort partial-failure mode.** Ships abort-on-first-failure (the plan's default); the best-effort variant that returns the list of failures is deferred.
@@ -283,7 +520,9 @@ Major modernization release. PHP 8.2+ floor, full type coverage, typed
 exception hierarchy, 100% unit-test line coverage, Behat integration tests
 against a dockerised SFTP fixture, GitHub Actions CI on PHP 8.2/8.3/8.4.
 
-See `MODERNIZE.md` for the engineering plan and per-issue rationale.
+The bug-fix matrix (`B1`–`B12`) and security baseline (`S1`–`S5`)
+referenced throughout the entries below are the original modernization
+identifiers tracked under MYID-4 in Asana.
 
 ### Breaking changes
 * PHP `>=8.2` required (was 5.4).

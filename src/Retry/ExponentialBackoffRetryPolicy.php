@@ -50,6 +50,19 @@ final class ExponentialBackoffRetryPolicy implements RetryPolicyInterface
         }
     }
 
+    /**
+     * Compute the delay before the next retry.
+     *
+     * Returns 0 once `$attempt` exceeds `$maxRetries`, the
+     * {@see RetryPolicyInterface} sentinel for "abort and rethrow".
+     * Otherwise: `delay = min(maxMs, baseMs * 2^(attempt-1))`, then
+     * perturbed by ±`jitter` uniformly, then re-clamped to `[0, maxMs]`.
+     *
+     * `$lastError` is accepted for interface conformance — this policy
+     * doesn't differentiate by exception type because `SftpClient`'s
+     * `isRetryable()` already filters out never-retry classes
+     * (auth, configuration, path validation) before calling here.
+     */
     public function nextDelayMs(int $attempt, SshException $lastError): int
     {
         if ($attempt > $this->maxRetries) {

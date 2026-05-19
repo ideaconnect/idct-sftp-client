@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<!--
+  Psalm config — checked-in so CI runs deterministically without an
+  init step. Error level 3 (moderate strictness): catches real bugs
+  without flooding the output with stylistic noise that PHPStan
+  already handles.
+
+  Taint analysis is on, scoped to src/. The library's main "untrusted
+  input → sensitive sink" path is the remote-path handling (callers
+  pass arbitrary strings that end up in SFTP commands / stream URIs);
+  PathValidator + the @psalm-taint-escape annotations should keep
+  things sound.
+-->
+<psalm
+  errorLevel="3"
+  resolveFromConfigFile="true"
+  findUnusedBaselineEntry="true"
+  findUnusedCode="false"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xmlns="https://getpsalm.org/schema/config"
+  xsi:schemaLocation="https://getpsalm.org/schema/config vendor/vimeo/psalm/config.xsd"
+>
+  <projectFiles>
+    <directory name="src" />
+    <ignoreFiles>
+      <directory name="vendor" />
+    </ignoreFiles>
+  </projectFiles>
+</psalm>

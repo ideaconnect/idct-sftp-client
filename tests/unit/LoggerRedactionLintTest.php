@@ -14,10 +14,6 @@ use PHPUnit\Framework\TestCase;
  * contains both a log invocation and the literal tokens "password" or
  * "passphrase", fail the build and force the author to refactor.
  *
- * Acceptance per PRODUCTION_GRADE.md §P7 — "a test that grep's src/ for
- * any string containing 'password' or 'passphrase' near a log call — fail
- * if found".
- *
  * Tradeoffs:
  * - False positives: if you legitimately log the string "password mode
  *   selected", this fails. Rename your message in that case.

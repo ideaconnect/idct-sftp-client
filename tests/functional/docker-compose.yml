@@ -16,5 +16,97 @@ services:
       timeout: 2s
       retries: 30
 
+  # Second SFTP backend: linuxserver/openssh-server (a full OpenSSH 9.x
+  # daemon, not the chroot-only atmoz/sftp). Gives multi-server matrix
+  # coverage so libssh2-vs-OpenSSH behavioural drift surfaces in CI rather
+  # than in production.
+  #
+  # Listens on 127.0.0.1:2223. Behat targets it by setting SFTP_PORT=2223
+  # (or SFTP_HOST/USER/PASS) in the environment before running the suite.
+  openssh:
+    image: lscr.io/linuxserver/openssh-server:latest
+    container_name: idct-openssh-fixture
+    ports:
+      - "127.0.0.1:2223:2222"
+    environment:
+      PUID: "1001"
+      PGID: "1001"
+      TZ: Etc/UTC
+      PASSWORD_ACCESS: "true"
+      USER_PASSWORD: testerpass
+      USER_NAME: tester
+      SUDO_ACCESS: "false"
+      LOG_STDOUT: "true"
+      PUBLIC_KEY_FILE: /pubkeys/id_rsa.pub
+    volumes:
+      - openssh_data:/data
+      - ./fixtures/openssh-init:/custom-cont-init.d:ro
+      - ./fixtures/keys/id_rsa.pub:/pubkeys/id_rsa.pub:ro
+    healthcheck:
+      test: ["CMD", "sh", "-c", "nc -z localhost 2222"]
+      interval: 2s
+      timeout: 2s
+      retries: 60
+
+  # P6 follow-up: an S3-compatible source for the upload-from-S3-stream
+  # Behat scenario. minio exposes its S3 API on 9000; the one-shot
+  # bucket init below seeds an `idct-test` bucket with a public-read
+  # policy + a `payload.bin` object the scenario streams via plain HTTP
+  # (`fopen('http://127.0.0.1:9000/idct-test/payload.bin', 'rb')`) into
+  # SftpClient::uploadStream. Plain HTTP keeps the test off any AWS SDK
+  # dependency.
+  minio:
+    image: minio/minio:RELEASE.2024-08-17T01-24-54Z
+    container_name: idct-minio-fixture
+    ports:
+      - "127.0.0.1:9000:9000"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:9000/minio/health/live"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  # P11 follow-up: toxiproxy as a man-in-the-middle between Behat and
+  # the SFTP servers, exposing controlled latency / bandwidth / packet-
+  # loss faults so retry, resume, and progress callbacks get real
+  # adversarial traffic. The proxies are managed by the Behat scenarios
+  # via toxiproxy's HTTP API on 8474.
+  toxiproxy:
+    image: ghcr.io/shopify/toxiproxy:2.9.0
+    container_name: idct-toxiproxy-fixture
+    ports:
+      - "127.0.0.1:8474:8474"   # admin / control API
+      - "127.0.0.1:22122:22122" # injected SFTP proxy → atmoz
+    command: ["-host=0.0.0.0", "-config=/tmp/empty.json"]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:8474/version"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  # One-shot: alias, create bucket, set anonymous download policy, upload
+  # a fixture object. Exits 0; depends_on in the scenario assertion
+  # against the s3 URL.
+  minio-init:
+    image: minio/mc:RELEASE.2024-08-17T11-33-50Z
+    container_name: idct-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        mc alias set local http://minio:9000 minioadmin minioadmin
+        mc mb -p local/idct-test
+        mc anonymous set download local/idct-test
+        echo -n 'streamed-from-minio-s3-payload' | mc pipe local/idct-test/payload.bin
+        echo "minio fixture seeded."
+
 volumes:
   sftp_data:
+  openssh_data:

@@ -100,10 +100,10 @@ final class CredentialsTest extends TestCase
         Credentials::withPublicKey('alice', $this->pubKeyFile, '/nonexistent/priv');
     }
 
-    // The authorize-dispatch tests moved to SftpClientTest in P1 when the
-    // authorizeSshConnection() method moved off Credentials and onto SftpClient
-    // (so the CredentialsInterface contract could stay pure-data, ext-ssh2-free).
-    // See PRODUCTION_GRADE.md §P1.
+    // The authorize-dispatch tests live in SftpClientTest. Auth dispatch
+    // moved off Credentials and onto SftpClient::authorize() so the
+    // CredentialsInterface contract stays pure-data, ext-ssh2-free
+    // (custom credential sources must not require ext-ssh2 to load).
 
     public function testImplementsCredentialsInterface(): void
     {

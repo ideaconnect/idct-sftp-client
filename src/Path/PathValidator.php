@@ -24,8 +24,6 @@ use IDCT\Networking\Ssh\Exception\InvalidPathException;
  * - T6 absolute-vs-relative prefix confusion — codified in
  *   {@see joinRemote()}: an absolute path bypasses the prefix
  *
- * The 6-threat matrix corresponds to §P2 of PRODUCTION_GRADE.md.
- *
  * ## What this class does NOT do
  *
  * - It does NOT canonicalize (`realpath`-style) the path. Servers normalize

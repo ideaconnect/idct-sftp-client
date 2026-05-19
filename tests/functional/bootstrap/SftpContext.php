@@ -5,35 +5,51 @@ declare(strict_types=1);
 namespace IDCT\Networking\Ssh\Tests\Functional;
 
 use Behat\Behat\Context\Context;
+use Behat\Gherkin\Node\TableNode;
 use Behat\Hook\AfterSuite;
 use Behat\Hook\BeforeScenario;
 use Behat\Hook\BeforeSuite;
-use Behat\Gherkin\Node\TableNode;
 use IDCT\Networking\Ssh\Auth\Credentials;
+use IDCT\Networking\Ssh\Auth\StaticCredentialsLoader;
+use IDCT\Networking\Ssh\Checksum\RedownloadRemoteHasher;
 use IDCT\Networking\Ssh\Directory\DownloadResult;
+use IDCT\Networking\Ssh\Directory\EntryType;
+use IDCT\Networking\Ssh\Directory\RemoteEntry;
 use IDCT\Networking\Ssh\Directory\UploadResult;
 use IDCT\Networking\Ssh\Exception\AuthenticationException;
 use IDCT\Networking\Ssh\Exception\ConnectionException;
 use IDCT\Networking\Ssh\Exception\InvalidPathException;
 use IDCT\Networking\Ssh\Exception\RemoteFilesystemException;
+use IDCT\Networking\Ssh\Exception\SshException;
 use IDCT\Networking\Ssh\Exception\TransferException;
 use IDCT\Networking\Ssh\HostKey\FingerprintAlgorithm;
 use IDCT\Networking\Ssh\HostKey\FingerprintEncoding;
+use IDCT\Networking\Ssh\KnownHosts\UnknownHostPolicy;
 use IDCT\Networking\Ssh\Progress\ProgressListenerInterface;
+use IDCT\Networking\Ssh\Retry\NoRetryPolicy;
 use IDCT\Networking\Ssh\SftpClient;
+use IDCT\Networking\Ssh\Tests\Support\CapturingLogger;
 use PHPUnit\Framework\Assert;
 
 /**
- * Behat context that drives a real ext-ssh2 client against the atmoz/sftp
- * container started by tests/functional/bin/up.
+ * Behat context that drives a real ext-ssh2 client against one of the
+ * dockerised SFTP fixtures started by tests/functional/bin/up.
+ *
+ * Target is controlled by env vars so the same suite runs against
+ * multiple backends:
+ *  - SFTP_HOST   (default 127.0.0.1)
+ *  - SFTP_PORT   (default 2222 — atmoz/sftp; set 2223 for OpenSSH 9.x)
+ *  - SFTP_USER   (default tester)
+ *  - SFTP_PASS   (default testerpass)
+ *  - SFTP_BASE   (default /data — chroot path on atmoz, ~/data on openssh)
  */
 final class SftpContext implements Context
 {
-    private const HOST = '127.0.0.1';
-    private const PORT = 2222;
-    private const USER = 'tester';
-    private const PASS = 'testerpass';
-    private const REMOTE_BASE = '/data';
+    private string $host;
+    private int $port;
+    private string $user;
+    private string $pass;
+    private string $remoteBase;
 
     private ?SftpClient $client = null;
     private string $tmpDir;
@@ -49,6 +65,17 @@ final class SftpContext implements Context
     private ?object $progressRecorder = null;
     private ?UploadResult $lastUploadResult = null;
     private ?DownloadResult $lastDownloadResult = null;
+    private ?string $knownHostsPath = null;
+
+    /** Toxiproxy proxy name → admin URL bookkeeping. */
+    private ?string $toxiproxyName = null;
+
+    /** Set by the walk-step; consumed by the post-order assertion. */
+    /** @var list<RemoteEntry>|null */
+    private ?array $lastWalk = null;
+
+    /** Set by the capturing-logger step; consumed by record-context assertions. */
+    private ?CapturingLogger $capturingLogger = null;
 
     #[BeforeSuite]
     public static function startFixture(): void
@@ -68,6 +95,11 @@ final class SftpContext implements Context
     {
         $this->tmpDir = sys_get_temp_dir() . '/idct-behat-' . bin2hex(random_bytes(4));
         mkdir($this->tmpDir, 0o755, true);
+        $this->host = getenv('SFTP_HOST') !== false ? (string) getenv('SFTP_HOST') : '127.0.0.1';
+        $this->port = getenv('SFTP_PORT') !== false ? (int) getenv('SFTP_PORT') : 2222;
+        $this->user = getenv('SFTP_USER') !== false ? (string) getenv('SFTP_USER') : 'tester';
+        $this->pass = getenv('SFTP_PASS') !== false ? (string) getenv('SFTP_PASS') : 'testerpass';
+        $this->remoteBase = getenv('SFTP_BASE') !== false ? (string) getenv('SFTP_BASE') : '/data';
         $this->client = null;
         $this->lastError = null;
         $this->memoryStream = null;
@@ -76,6 +108,12 @@ final class SftpContext implements Context
         $this->progressRecorder = null;
         $this->lastUploadResult = null;
         $this->lastDownloadResult = null;
+        $this->knownHostsPath = null;
+        // Tear down any toxiproxy proxy left over from a previous scenario.
+        if ($this->toxiproxyName !== null) {
+            $this->toxiproxyDelete($this->toxiproxyName);
+            $this->toxiproxyName = null;
+        }
     }
 
     /**
@@ -84,8 +122,8 @@ final class SftpContext implements Context
     public function iHaveAConnectedSftpClient(): void
     {
         $this->client = new SftpClient();
-        $this->client->setCredentials(Credentials::withPassword(self::USER, self::PASS));
-        $this->client->connect(self::HOST, self::PORT);
+        $this->client->setCredentials(Credentials::withPassword($this->user, $this->pass));
+        $this->client->connect($this->host, $this->port);
     }
 
     /**
@@ -97,10 +135,20 @@ final class SftpContext implements Context
 
         try {
             foreach ($client->getFileList($path) as $entry) {
+                $full = rtrim($path, '/') . '/' . ltrim($entry, '/');
+
                 try {
-                    $client->remove(self::REMOTE_BASE . '/' . ltrim($entry, '/'));
+                    // Try unlink first (regular file or symlink); if the
+                    // entry is a directory, fall through to
+                    // removeDirectoryTree so nested leftovers from prior
+                    // runs get wiped.
+                    $client->remove($full);
                 } catch (RemoteFilesystemException) {
-                    // best effort cleanup
+                    try {
+                        $client->removeDirectoryTree($full);
+                    } catch (RemoteFilesystemException) {
+                        // best effort cleanup
+                    }
                 }
             }
         } catch (RemoteFilesystemException) {
@@ -122,7 +170,7 @@ final class SftpContext implements Context
     public function iConnectWithPassword(): void
     {
         $this->client = new SftpClient();
-        $this->client->setCredentials(Credentials::withPassword(self::USER, self::PASS));
+        $this->client->setCredentials(Credentials::withPassword($this->user, $this->pass));
         $this->tryConnect();
     }
 
@@ -132,7 +180,7 @@ final class SftpContext implements Context
     public function iConnectWithWrongPassword(): void
     {
         $this->client = new SftpClient();
-        $this->client->setCredentials(Credentials::withPassword(self::USER, 'wrong'));
+        $this->client->setCredentials(Credentials::withPassword($this->user, 'wrong'));
         $this->tryConnect();
     }
 
@@ -143,7 +191,7 @@ final class SftpContext implements Context
     {
         $this->client = new SftpClient();
         $this->client->setCredentials(Credentials::withPublicKey(
-            self::USER,
+            $this->user,
             __DIR__ . '/../fixtures/keys/id_rsa.pub',
             __DIR__ . '/../fixtures/keys/id_rsa',
         ));
@@ -156,12 +204,12 @@ final class SftpContext implements Context
     public function iConnectWithFingerprint(string $fingerprint): void
     {
         $this->client = new SftpClient();
-        $this->client->setCredentials(Credentials::withPassword(self::USER, self::PASS));
+        $this->client->setCredentials(Credentials::withPassword($this->user, $this->pass));
 
         try {
             $this->client->connect(
-                self::HOST,
-                self::PORT,
+                $this->host,
+                $this->port,
                 null,
                 $fingerprint,
                 FingerprintAlgorithm::Sha256,
@@ -269,6 +317,105 @@ final class SftpContext implements Context
         } catch (\Throwable $e) {
             $this->lastError = $e;
         }
+    }
+
+    /**
+     * @Given /^I have a toxiproxy SFTP proxy named "([^"]+)" to atmoz on port (\d+)$/
+     */
+    public function iHaveAToxiproxy(string $name, int $listenPort): void
+    {
+        // Toxiproxy's "upstream" is the host the proxy forwards to. From
+        // inside the docker network atmoz is `sftp:22`; the proxy listens
+        // on $listenPort on the toxiproxy container, which we publish to
+        // 127.0.0.1:22122.
+        $this->toxiproxyDelete($name);
+        $payload = json_encode([
+            'name' => $name,
+            'listen' => '0.0.0.0:' . $listenPort,
+            'upstream' => 'sftp:22',
+            'enabled' => true,
+        ], \JSON_THROW_ON_ERROR);
+        $this->toxiproxyApi('POST', '/proxies', $payload);
+        $this->toxiproxyName = $name;
+    }
+
+    /**
+     * @Given /^I have a connected SFTP client via the "([^"]+)" proxy$/
+     */
+    public function iHaveAConnectedClientViaProxy(string $name): void
+    {
+        $this->client = new SftpClient();
+        $this->client->setCredentials(Credentials::withPassword($this->user, $this->pass));
+        $this->client->connect($this->host, 22122);
+    }
+
+    /**
+     * @Given /^a (\d+)ms latency toxic is added to "([^"]+)"$/
+     */
+    public function aLatencyToxic(int $latencyMs, string $name): void
+    {
+        $payload = json_encode([
+            'name' => 'latency-' . $latencyMs,
+            'type' => 'latency',
+            'stream' => 'downstream',
+            'attributes' => ['latency' => $latencyMs],
+        ], \JSON_THROW_ON_ERROR);
+        $this->toxiproxyApi('POST', '/proxies/' . $name . '/toxics', $payload);
+    }
+
+    /**
+     * @Given /^a (\d+)-byte-per-second bandwidth toxic is added to "([^"]+)"$/
+     */
+    public function aBandwidthToxic(int $bytesPerSec, string $name): void
+    {
+        $payload = json_encode([
+            'name' => 'bw-' . $bytesPerSec,
+            'type' => 'bandwidth',
+            'stream' => 'downstream',
+            'attributes' => ['rate' => (int) ($bytesPerSec / 1024)], // toxiproxy expects KB/s
+        ], \JSON_THROW_ON_ERROR);
+        $this->toxiproxyApi('POST', '/proxies/' . $name . '/toxics', $payload);
+    }
+
+    private function toxiproxyDelete(string $name): void
+    {
+        // 404 is fine (proxy might not exist). Anything else, ignore for
+        // best-effort teardown — the next BeforeScenario will retry.
+        @file_get_contents(
+            'http://127.0.0.1:8474/proxies/' . $name,
+            false,
+            stream_context_create(['http' => ['method' => 'DELETE', 'ignore_errors' => true]]),
+        );
+    }
+
+    private function toxiproxyApi(string $method, string $path, string $body): void
+    {
+        $ctx = stream_context_create(['http' => [
+            'method' => $method,
+            'header' => "Content-Type: application/json\r\n",
+            'content' => $body,
+            'ignore_errors' => true,
+            'timeout' => 5,
+        ]]);
+        $resp = @file_get_contents('http://127.0.0.1:8474' . $path, false, $ctx);
+        if ($resp === false) {
+            throw new \RuntimeException(
+                'toxiproxy ' . $method . ' ' . $path . ' failed: ' . ($body ?: '<empty>'),
+            );
+        }
+    }
+
+    /**
+     * @Given /^I have an HTTP stream from "([^"]+)"$/
+     */
+    public function iHaveAnHttpStream(string $url): void
+    {
+        // fopen on http:// goes through PHP's stream wrapper; the stream
+        // is non-seekable, which makes this a stronger test of uploadStream
+        // than the php://memory case (memory streams are seekable).
+        $stream = @fopen($url, 'rb');
+        Assert::assertNotFalse($stream, 'could not open HTTP source ' . $url);
+        $this->memoryStream = $stream;
     }
 
     /**
@@ -497,9 +644,22 @@ final class SftpContext implements Context
      */
     public function uploadResultReports(int $files, int $bytes): void
     {
-        Assert::assertNotNull($this->lastUploadResult);
-        Assert::assertSame($files, $this->lastUploadResult->filesTransferred);
-        Assert::assertSame($bytes, $this->lastUploadResult->bytesTransferred);
+        $r = $this->lastUploadResult;
+        if ($r === null) {
+            throw new \RuntimeException(
+                'No upload result captured. lastError = '
+                . ($this->lastError === null ? '(none)' : $this->lastError::class . ': ' . $this->lastError->getMessage()),
+            );
+        }
+        if ($r->filesTransferred !== $files || $r->bytesTransferred !== $bytes) {
+            throw new \RuntimeException(\sprintf(
+                'upload result mismatch: expected %d files / %d bytes, got %d / %d',
+                $files,
+                $bytes,
+                $r->filesTransferred,
+                $r->bytesTransferred,
+            ));
+        }
     }
 
     /**
@@ -519,6 +679,148 @@ final class SftpContext implements Context
         Assert::assertFalse(
             $this->requireClient()->fileExists($dir),
             'expected remote directory to be gone: ' . $dir,
+        );
+    }
+
+    /**
+     * @Given /^I have an empty known_hosts file$/
+     */
+    public function emptyKnownHostsFile(): void
+    {
+        $this->knownHostsPath = $this->tmpDir . '/known_hosts';
+        file_put_contents($this->knownHostsPath, '');
+    }
+
+    /**
+     * @Given /^I have a known_hosts file with a tampered fingerprint for ([^\s]+)$/
+     */
+    public function tamperedKnownHostsFile(string $host): void
+    {
+        $this->knownHostsPath = $this->tmpDir . '/known_hosts';
+        // Pin a deliberately-wrong SHA-1 fingerprint. The server's actual
+        // SHA-1 won't match this, so verifyHost() returns Mismatch.
+        // The stored hostspec must match what the client looks up:
+        // [host]:port form for the runtime port (parameterised so the same
+        // scenario covers both atmoz on 2222 and OpenSSH on 2223).
+        file_put_contents(
+            $this->knownHostsPath,
+            '[' . $host . ']:' . $this->port . ' sha1-fpr ' . str_repeat('0', 40) . "\n",
+        );
+    }
+
+    /**
+     * @Given /^I connect once with the known_hosts file and TrustOnFirstUse$/
+     */
+    public function iConnectOnceWithTofu(): void
+    {
+        $primer = new SftpClient();
+        $primer->setCredentials(Credentials::withPassword($this->user, $this->pass));
+        $primer->connect(
+            $this->host,
+            $this->port,
+            knownHostsFile: $this->knownHostsPath,
+            onUnknownHost: UnknownHostPolicy::TrustOnFirstUse,
+        );
+        $primer->close();
+    }
+
+    /**
+     * @When /^I connect with the known_hosts file and TrustOnFirstUse$/
+     */
+    public function iConnectWithTofu(): void
+    {
+        $this->client = new SftpClient();
+        $this->client->setCredentials(Credentials::withPassword($this->user, $this->pass));
+
+        try {
+            $this->client->connect(
+                $this->host,
+                $this->port,
+                knownHostsFile: $this->knownHostsPath,
+                onUnknownHost: UnknownHostPolicy::TrustOnFirstUse,
+            );
+        } catch (\Throwable $e) {
+            $this->lastError = $e;
+        }
+    }
+
+    /**
+     * @When /^I connect with the known_hosts file and Reject policy$/
+     */
+    public function iConnectWithReject(): void
+    {
+        $this->client = new SftpClient();
+        $this->client->setCredentials(Credentials::withPassword($this->user, $this->pass));
+
+        try {
+            $this->client->connect(
+                $this->host,
+                $this->port,
+                knownHostsFile: $this->knownHostsPath,
+                onUnknownHost: UnknownHostPolicy::Reject,
+            );
+        } catch (\Throwable $e) {
+            $this->lastError = $e;
+        }
+    }
+
+    /**
+     * @Then /^the known_hosts file now lists 127\.0\.0\.1 with a sha256-fpr entry$/
+     */
+    public function knownHostsFileListsTofuEntry(): void
+    {
+        Assert::assertNotNull($this->knownHostsPath);
+        $body = file_get_contents($this->knownHostsPath);
+        Assert::assertNotFalse($body);
+        // Plain preg_match + assertSame keeps us off PHPUnit's
+        // Configuration-dependent formatter. Port is parameterised so
+        // the same scenario runs against atmoz (2222) and OpenSSH (2223).
+        $pattern = '/^\[' . preg_quote($this->host, '/') . '\]:' . $this->port . ' sha1-fpr [0-9a-f]{40}$/m';
+        Assert::assertSame(
+            1,
+            preg_match($pattern, $body),
+            'expected a [' . $this->host . ']:' . $this->port . ' sha1-fpr line in known_hosts',
+        );
+    }
+
+    /**
+     * @Then /^the known_hosts file has exactly one entry$/
+     */
+    public function knownHostsFileHasExactlyOneEntry(): void
+    {
+        Assert::assertNotNull($this->knownHostsPath);
+        $body = file_get_contents($this->knownHostsPath);
+        Assert::assertNotFalse($body);
+        $entryLines = array_filter(
+            explode("\n", $body),
+            static fn(string $l): bool => str_contains($l, 'sha1-fpr '),
+        );
+        Assert::assertCount(1, $entryLines, 'expected exactly one sha1-fpr entry');
+    }
+
+    /**
+     * @Then /^a known-hosts rejection is reported$/
+     */
+    public function knownHostsRejectionReported(): void
+    {
+        Assert::assertInstanceOf(ConnectionException::class, $this->lastError);
+        $msg = $this->lastError->getMessage();
+        Assert::assertTrue(
+            str_contains($msg, 'Unknown host'),
+            'expected an "Unknown host" rejection; got: ' . $msg,
+        );
+    }
+
+    /**
+     * @Then /^a known-hosts mismatch is reported$/
+     */
+    public function knownHostsMismatchReported(): void
+    {
+        Assert::assertInstanceOf(ConnectionException::class, $this->lastError);
+        $msg = $this->lastError->getMessage();
+        Assert::assertTrue(
+            str_contains($msg, 'Known-hosts mismatch'),
+            'expected a "Known-hosts mismatch" error; got: ' . $msg,
         );
     }
 
@@ -673,10 +975,235 @@ final class SftpContext implements Context
         Assert::assertInstanceOf(InvalidPathException::class, $this->lastError);
     }
 
+    // ───────────────────────────────────────────────────────────────────
+    // README example scenarios — see tests/functional/features/readme.feature
+    // ───────────────────────────────────────────────────────────────────
+
+    /**
+     * @Given /^a StaticCredentialsLoader carrying the fixture credentials$/
+     */
+    public function staticCredentialsLoaderCarryingFixture(): void
+    {
+        $loader = new StaticCredentialsLoader(Credentials::withPassword($this->user, $this->pass));
+        $this->client = new SftpClient();
+        $this->client->setCredentialsLoader($loader);
+    }
+
+    /**
+     * @When /^I connect through the loader with no explicit credentials$/
+     */
+    public function connectThroughLoaderWithoutCredentials(): void
+    {
+        try {
+            $this->requireClient()->connect($this->host, $this->port);
+        } catch (\Throwable $e) {
+            $this->lastError = $e;
+        }
+    }
+
+    /**
+     * @Then /^the client's getCredentials returns the loader-resolved value$/
+     */
+    public function clientCredentialsResolvedByLoader(): void
+    {
+        $resolved = $this->requireClient()->getCredentials();
+        Assert::assertNotNull($resolved, 'loader should have resolved credentials by now');
+        Assert::assertSame($this->user, $resolved->getUsername());
+    }
+
+    /**
+     * @Given /^the client has file-size verification enabled$/
+     */
+    public function clientHasFileSizeVerification(): void
+    {
+        $this->requireClient()->enableFileSizeVerification();
+    }
+
+    /**
+     * @Given /^the client has atomic uploads disabled$/
+     */
+    public function clientHasAtomicUploadsDisabled(): void
+    {
+        $this->requireClient()->disableAtomicUploads();
+    }
+
+    /**
+     * @When /^I walk "([^"]+)"$/
+     */
+    public function iWalk(string $remoteDir): void
+    {
+        $entries = [];
+        foreach ($this->requireClient()->walk($remoteDir) as $entry) {
+            $entries[] = $entry;
+        }
+        $this->lastWalk = $entries;
+    }
+
+    /**
+     * @Then /^the walk yielded (\d+) entries$/
+     */
+    public function walkYieldedNEntries(int $expected): void
+    {
+        Assert::assertNotNull($this->lastWalk, 'no walk step ran before this assertion');
+        Assert::assertCount($expected, $this->lastWalk);
+    }
+
+    /**
+     * @Then /^every directory in the walk appears after its children$/
+     */
+    public function walkPostOrderInvariant(): void
+    {
+        Assert::assertNotNull($this->lastWalk);
+        $position = [];
+        foreach ($this->lastWalk as $i => $e) {
+            $position[$e->path] = $i;
+        }
+        foreach ($this->lastWalk as $entry) {
+            if ($entry->type !== EntryType::Directory) {
+                continue;
+            }
+            $parentPos = $position[$entry->path];
+            // every entry whose path is a strict descendant of $entry->path
+            // must appear EARLIER in the listing.
+            foreach ($position as $candidatePath => $candidatePos) {
+                if ($candidatePath === $entry->path) {
+                    continue;
+                }
+                if (str_starts_with($candidatePath, $entry->path . '/')) {
+                    Assert::assertLessThan(
+                        $parentPos,
+                        $candidatePos,
+                        "child {$candidatePath} (pos {$candidatePos}) must precede parent {$entry->path} (pos {$parentPos})",
+                    );
+                }
+            }
+        }
+    }
+
+    /**
+     * @Given /^I install a NoRetryPolicy on the client$/
+     */
+    public function installNoRetryPolicy(): void
+    {
+        $this->requireClient()->setRetryPolicy(new NoRetryPolicy());
+    }
+
+    /**
+     * @Then /^ping returns true$/
+     */
+    public function pingReturnsTrue(): void
+    {
+        Assert::assertTrue($this->requireClient()->ping());
+    }
+
+    /**
+     * @Then /^ping returns false$/
+     */
+    public function pingReturnsFalse(): void
+    {
+        Assert::assertFalse($this->requireClient()->ping());
+    }
+
+    /**
+     * @When /^I close the client$/
+     */
+    public function iCloseTheClient(): void
+    {
+        $this->requireClient()->close();
+    }
+
+    /**
+     * @Given /^the client uses a RedownloadRemoteHasher with algorithm "([^"]+)"$/
+     */
+    public function clientUsesRedownloadHasher(string $algorithm): void
+    {
+        $this->requireClient()->setRemoteHasher(new RedownloadRemoteHasher($algorithm));
+    }
+
+    /**
+     * @Given /^the client has remote prefix "([^"]+)"$/
+     */
+    public function clientHasRemotePrefix(string $prefix): void
+    {
+        $this->requireClient()->setRemotePrefix($prefix);
+        // Make sure the prefix path exists so upload() (which doesn't
+        // mkdir intermediate dirs) doesn't fail with "no such directory".
+        try {
+            $this->requireClient()->makeDirectory(rtrim($prefix, '/'), recursive: true);
+        } catch (\Throwable) {
+            // ignore — already exists or unprivileged path
+        }
+    }
+
+    /**
+     * @Given /^the client has a capturing logger$/
+     */
+    public function clientHasCapturingLogger(): void
+    {
+        $this->capturingLogger = new CapturingLogger();
+        $this->requireClient()->setLogger($this->capturingLogger);
+    }
+
+    /**
+     * @Given /^the client log context is "([^"]+)" = "([^"]+)" and "([^"]+)" = "([^"]+)"$/
+     */
+    public function clientLogContextTwoKeys(string $k1, string $v1, string $k2, string $v2): void
+    {
+        $this->requireClient()->setLogContext([$k1 => $v1, $k2 => $v2]);
+    }
+
+    /**
+     * @Then /^every captured log record carries context key "([^"]+)" with value "([^"]+)"$/
+     */
+    public function everyCapturedLogRecordCarriesKeyWithValue(string $key, string $value): void
+    {
+        Assert::assertNotNull($this->capturingLogger);
+        Assert::assertNotEmpty($this->capturingLogger->records);
+        foreach ($this->capturingLogger->records as $r) {
+            Assert::assertArrayHasKey(
+                $key,
+                $r['context'],
+                'log record at level ' . $r['level'] . ' missing key "' . $key . '"',
+            );
+            Assert::assertSame(
+                $value,
+                $r['context'][$key],
+                'log record at level ' . $r['level'] . ' had unexpected value for "' . $key . '"',
+            );
+        }
+    }
+
+    /**
+     * @Then /^every captured log record carries a "([^"]+)" key$/
+     */
+    public function everyCapturedLogRecordCarriesKey(string $key): void
+    {
+        Assert::assertNotNull($this->capturingLogger);
+        Assert::assertNotEmpty($this->capturingLogger->records);
+        foreach ($this->capturingLogger->records as $r) {
+            Assert::assertArrayHasKey($key, $r['context']);
+        }
+    }
+
+    /**
+     * @Then /^a single SshException was thrown$/
+     */
+    public function singleSshExceptionThrown(): void
+    {
+        Assert::assertInstanceOf(
+            SshException::class,
+            $this->lastError,
+            'expected a library exception (SshException root); got '
+            . ($this->lastError === null ? 'no exception at all' : $this->lastError::class),
+        );
+    }
+
+    // ───────────────────────────────────────────────────────────────────
+
     private function tryConnect(): void
     {
         try {
-            $this->requireClient()->connect(self::HOST, self::PORT);
+            $this->requireClient()->connect($this->host, $this->port);
         } catch (\Throwable $e) {
             $this->lastError = $e;
         }

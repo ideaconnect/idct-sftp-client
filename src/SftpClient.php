@@ -4,11 +4,17 @@ declare(strict_types=1);
 
 namespace IDCT\Networking\Ssh;
 
+use IDCT\Networking\Ssh\Auth\AuthFailureRateLimiter;
 use IDCT\Networking\Ssh\Auth\AuthMode;
 use IDCT\Networking\Ssh\Auth\CredentialsInterface;
+use IDCT\Networking\Ssh\Auth\CredentialsLoaderInterface;
+use IDCT\Networking\Ssh\Checksum\RemoteHasherInterface;
+use IDCT\Networking\Ssh\Directory\ConflictPolicy;
+use IDCT\Networking\Ssh\Directory\DirectoryFailure;
 use IDCT\Networking\Ssh\Directory\DownloadResult;
 use IDCT\Networking\Ssh\Directory\EntryType;
 use IDCT\Networking\Ssh\Directory\RemoteEntry;
+use IDCT\Networking\Ssh\Directory\SymlinkPolicy;
 use IDCT\Networking\Ssh\Directory\UploadResult;
 use IDCT\Networking\Ssh\Exception\AuthenticationException;
 use IDCT\Networking\Ssh\Exception\ConfigurationException;
@@ -19,10 +25,14 @@ use IDCT\Networking\Ssh\Exception\SshException;
 use IDCT\Networking\Ssh\Exception\TransferException;
 use IDCT\Networking\Ssh\HostKey\FingerprintAlgorithm;
 use IDCT\Networking\Ssh\HostKey\FingerprintEncoding;
+use IDCT\Networking\Ssh\KnownHosts\HostKeyDecision;
+use IDCT\Networking\Ssh\KnownHosts\KnownHostsFile;
+use IDCT\Networking\Ssh\KnownHosts\UnknownHostPolicy;
 use IDCT\Networking\Ssh\Path\PathValidator;
 use IDCT\Networking\Ssh\Progress\ProgressListenerInterface;
 use IDCT\Networking\Ssh\Retry\ExponentialBackoffRetryPolicy;
 use IDCT\Networking\Ssh\Retry\RetryPolicyInterface;
+use IDCT\Networking\Ssh\Security\SecurityProfile;
 use IDCT\Networking\Ssh\Ssh2\Ssh2Functions;
 use IDCT\Networking\Ssh\Ssh2\Ssh2FunctionsInterface;
 use Psr\Log\LoggerAwareInterface;
@@ -33,18 +43,52 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
 {
     use LoggerAwareTrait;
 
+    /**
+     * Static credentials used by {@see connect()} when no per-host
+     * loader is installed. Mutually exclusive with {@see $credentialsLoader}.
+     */
     private ?CredentialsInterface $credentials = null;
 
-    /** @var resource|null */
+    /**
+     * Per-host credentials loader. Takes precedence over {@see $credentials}
+     * when set — every connect() re-resolves credentials via the loader so
+     * a single client can serve multiple hosts with different secrets.
+     */
+    private ?CredentialsLoaderInterface $credentialsLoader = null;
+
+    /**
+     * Live SSH session resource from {@see Ssh2FunctionsInterface::connect()}.
+     * `null` before {@see connect()} and after {@see close()}.
+     *
+     * @var resource|null
+     */
     private mixed $sshSession = null;
 
-    /** @var resource|null */
+    /**
+     * Live SFTP subsystem resource from {@see Ssh2FunctionsInterface::sftp()}.
+     * `null` before {@see connect()} and after {@see close()}.
+     *
+     * @var resource|null
+     */
     private mixed $sftp = null;
 
+    /**
+     * Prepended verbatim to every LOCAL path. `''` disables prefixing.
+     * Absolute paths (those starting with `/`) bypass the prefix.
+     */
     private string $localPrefix = '';
 
+    /**
+     * Prepended via {@see PathValidator::joinRemote()} to every REMOTE
+     * path. `''` disables prefixing. Absolute paths bypass the prefix.
+     */
     private string $remotePrefix = '';
 
+    /**
+     * When true, every upload/download/resume verifies the post-transfer
+     * byte count via a stat round-trip and throws on mismatch. Defaults
+     * to the constructor's `$enableFileSizeVerification` flag (false).
+     */
     private bool $fileSizeVerificationEnabled;
 
     /**
@@ -88,14 +132,34 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
     private ?int $port = null;
 
     // ── stored connect arguments, used by lazy reconnect on retry ─────────
+    /** TCP probe timeout from the last connect(); `null` means no pre-probe. */
     private ?int $timeoutSeconds = null;
 
+    /** Expected host-key fingerprint to match against on connect; `null` skips the check. */
     private ?string $expectedFingerprint = null;
 
+    /** Algorithm used to compute `$expectedFingerprint`. */
     private FingerprintAlgorithm $fingerprintAlgorithm = FingerprintAlgorithm::Sha256;
 
+    /** Encoding (hex / raw) `$expectedFingerprint` is given in. */
     private FingerprintEncoding $fingerprintEncoding = FingerprintEncoding::Hex;
 
+    /** Path to OpenSSH-format known_hosts file (with optional TOFU entries); `null` disables file-based verification. */
+    private ?string $knownHostsFile = null;
+
+    /** What to do when the host isn't in `$knownHostsFile` — Reject (raise) or TrustOnFirstUse (append + proceed). */
+    private UnknownHostPolicy $onUnknownHost = UnknownHostPolicy::Reject;
+
+    /** Cipher / MAC / KEX preset; `null` and Compatible both leave libssh2 defaults untouched. */
+    private ?SecurityProfile $securityProfile = null;
+
+    /** Optional per-process backoff after consecutive auth failures; `null` disables. */
+    private ?AuthFailureRateLimiter $authRateLimiter = null;
+
+    /** Server-side checksum verifier; `null` disables checksum verification. */
+    private ?RemoteHasherInterface $remoteHasher = null;
+
+    /** Retry policy wrapping connect / upload / download / scp; defaulted in the constructor. */
     private RetryPolicyInterface $retryPolicy;
 
     /**
@@ -106,6 +170,21 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
      */
     private array $logContext = [];
 
+    /**
+     * @param bool $enableFileSizeVerification  Enable post-transfer
+     *        byte-count verification (one extra stat per file). Off by
+     *        default — flip on for paranoid integrity checks.
+     * @param Ssh2FunctionsInterface|null $ssh2 ext-ssh2 adapter; pass a
+     *        fake in tests, `null` uses the real {@see Ssh2Functions}.
+     * @param RetryPolicyInterface|null $retryPolicy Retry strategy; `null`
+     *        uses {@see ExponentialBackoffRetryPolicy} with default knobs.
+     * @param bool $atomicUploads Write to a hidden `.partial-{uuid}` sibling
+     *        and rename onto the final path. On by default.
+     * @param int $chunkSize fread/fwrite buffer size in bytes; defaults
+     *        to {@see DEFAULT_CHUNK_SIZE} (1 MiB). Must be >= 1.
+     *
+     * @throws ConfigurationException when `$chunkSize` is less than 1.
+     */
     public function __construct(
         bool $enableFileSizeVerification = false,
         ?Ssh2FunctionsInterface $ssh2 = null,
@@ -124,6 +203,7 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
         $this->logger = new NullLogger();
     }
 
+    /** {@inheritDoc} */
     public function setRetryPolicy(RetryPolicyInterface $policy): self
     {
         $this->retryPolicy = $policy;
@@ -131,6 +211,7 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
         return $this;
     }
 
+    /** {@inheritDoc} */
     public function getRetryPolicy(): RetryPolicyInterface
     {
         return $this->retryPolicy;
@@ -151,11 +232,16 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
         return $this;
     }
 
+    /**
+     * Best-effort close on garbage collection so a forgotten client
+     * doesn't leak the underlying SSH session.
+     */
     public function __destruct()
     {
         $this->close();
     }
 
+    /** {@inheritDoc} */
     public function enableFileSizeVerification(): self
     {
         $this->fileSizeVerificationEnabled = true;
@@ -163,6 +249,7 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
         return $this;
     }
 
+    /** {@inheritDoc} */
     public function disableFileSizeVerification(): self
     {
         $this->fileSizeVerificationEnabled = false;
@@ -170,6 +257,7 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
         return $this;
     }
 
+    /** {@inheritDoc} */
     public function enableAtomicUploads(): self
     {
         $this->atomicUploads = true;
@@ -177,6 +265,7 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
         return $this;
     }
 
+    /** {@inheritDoc} */
     public function disableAtomicUploads(): self
     {
         $this->atomicUploads = false;
@@ -184,11 +273,13 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
         return $this;
     }
 
+    /** {@inheritDoc} */
     public function getAtomicUploads(): bool
     {
         return $this->atomicUploads;
     }
 
+    /** {@inheritDoc} */
     public function setChunkSize(int $bytes): self
     {
         if ($bytes < 1) {
@@ -199,23 +290,99 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
         return $this;
     }
 
+    /** {@inheritDoc} */
     public function getChunkSize(): int
     {
         return $this->chunkSize;
     }
 
+    /** {@inheritDoc} */
     public function setCredentials(CredentialsInterface $credentials): self
     {
         $this->credentials = $credentials;
+        // Eagerly clear any loader so subsequent connect() uses the
+        // explicit credentials. Keeping both around would be ambiguous.
+        $this->credentialsLoader = null;
 
         return $this;
     }
 
+    /** {@inheritDoc} */
     public function getCredentials(): ?CredentialsInterface
     {
         return $this->credentials;
     }
 
+    /**
+     * Install a {@see CredentialsLoaderInterface} that resolves credentials
+     * per-host at connect-time. Mutually exclusive with
+     * {@see setCredentials()} — setting one clears the other.
+     */
+    public function setCredentialsLoader(CredentialsLoaderInterface $loader): self
+    {
+        $this->credentialsLoader = $loader;
+        $this->credentials = null;
+
+        return $this;
+    }
+
+    /** {@inheritDoc} */
+    public function getCredentialsLoader(): ?CredentialsLoaderInterface
+    {
+        return $this->credentialsLoader;
+    }
+
+    /**
+     * Install a per-host {@see AuthFailureRateLimiter} that sleeps the
+     * caller after repeated authentication failures, complementing
+     * server-side lockout protections (fail2ban / sshguard). Pass `null`
+     * to disable. Off by default — opt in when the deployment has caller
+     * code that might retry connect() on auth errors.
+     */
+    public function setAuthFailureRateLimiter(?AuthFailureRateLimiter $limiter): self
+    {
+        $this->authRateLimiter = $limiter;
+
+        return $this;
+    }
+
+    /** {@inheritDoc} */
+    public function getAuthFailureRateLimiter(): ?AuthFailureRateLimiter
+    {
+        return $this->authRateLimiter;
+    }
+
+    /**
+     * Install a server-side checksum verifier. When set, every
+     * successful {@see upload()}, {@see resumeUpload()}, and
+     * {@see download()} computes both sides' digests and throws
+     * a {@see TransferException} on mismatch.
+     *
+     * Defaults to `null` (no checksum verification). Stock options:
+     *  - {@see \IDCT\Networking\Ssh\Checksum\ShellSumRemoteHasher} (ssh2_exec sha256sum)
+     *  - {@see \IDCT\Networking\Ssh\Checksum\RedownloadRemoteHasher} (re-fetch and hash)
+     *
+     * Stream-based transfers ({@see uploadStream()} / {@see downloadStream()})
+     * are NOT checksum-verified — the source / sink stream is consumed
+     * by the time we'd need to hash it.
+     */
+    public function setRemoteHasher(?RemoteHasherInterface $hasher): self
+    {
+        $this->remoteHasher = $hasher;
+
+        return $this;
+    }
+
+    /**
+     * Return the active server-side checksum verifier, or `null` if none
+     * was installed via {@see setRemoteHasher()}.
+     */
+    public function getRemoteHasher(): ?RemoteHasherInterface
+    {
+        return $this->remoteHasher;
+    }
+
+    /** {@inheritDoc} */
     public function setLocalPrefix(string $prefix): self
     {
         $this->localPrefix = $prefix;
@@ -223,11 +390,13 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
         return $this;
     }
 
+    /** {@inheritDoc} */
     public function getLocalPrefix(): string
     {
         return $this->localPrefix;
     }
 
+    /** {@inheritDoc} */
     public function setRemotePrefix(string $prefix): self
     {
         $this->remotePrefix = $prefix;
@@ -235,11 +404,13 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
         return $this;
     }
 
+    /** {@inheritDoc} */
     public function getRemotePrefix(): string
     {
         return $this->remotePrefix;
     }
 
+    /** {@inheritDoc} */
     public function connect(
         string $host,
         int $port = 22,
@@ -247,9 +418,21 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
         ?string $expectedFingerprint = null,
         FingerprintAlgorithm $fingerprintAlgorithm = FingerprintAlgorithm::Sha256,
         FingerprintEncoding $fingerprintEncoding = FingerprintEncoding::Hex,
+        ?string $knownHostsFile = null,
+        UnknownHostPolicy $onUnknownHost = UnknownHostPolicy::Reject,
+        ?SecurityProfile $securityProfile = null,
     ): self {
+        // Resolve credentials: a loader (if installed) wins, so credentials
+        // get re-resolved per connect() — necessary for callers connecting to
+        // different hosts on the same client instance, or for loaders that
+        // rotate tokens. Otherwise fall back to whatever setCredentials() set.
+        if ($this->credentialsLoader !== null) {
+            $this->credentials = $this->credentialsLoader->load($host);
+        }
         if ($this->credentials === null) {
-            throw new ConfigurationException('Credentials must be set before calling connect().');
+            throw new ConfigurationException(
+                'Credentials must be set before calling connect(); use setCredentials() or setCredentialsLoader().',
+            );
         }
 
         // Open the per-connection log scope ONCE; retries reuse the same id
@@ -261,6 +444,9 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
         $this->expectedFingerprint = $expectedFingerprint;
         $this->fingerprintAlgorithm = $fingerprintAlgorithm;
         $this->fingerprintEncoding = $fingerprintEncoding;
+        $this->knownHostsFile = $knownHostsFile;
+        $this->onUnknownHost = $onUnknownHost;
+        $this->securityProfile = $securityProfile;
 
         $this->log('info', 'SSH connect attempt', ['mode' => $this->credentials->getMode()->name]);
 
@@ -294,7 +480,14 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
             $this->probeTcp($host, $port, $this->timeoutSeconds);
         }
 
-        $session = $this->ssh2->connect($host, $port);
+        $methods = $this->securityProfile?->toMethodsArray();
+        if ($this->securityProfile === SecurityProfile::Legacy) {
+            $this->log('notice', 'SSH SecurityProfile::Legacy in use — weak algorithms permitted', [
+                'profile' => 'Legacy',
+            ]);
+        }
+
+        $session = $this->ssh2->connect($host, $port, $methods);
         if ($session === false) {
             $this->log('error', 'SSH connect failed (transport)');
 
@@ -333,6 +526,10 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
             }
         }
 
+        if ($this->knownHostsFile !== null) {
+            $this->verifyAgainstKnownHosts($session, $host, $port);
+        }
+
         $this->authorize($session, $credentials);
 
         $sftp = $this->ssh2->sftp($session);
@@ -350,6 +547,7 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
         return true;
     }
 
+    /** {@inheritDoc} */
     public function close(): self
     {
         $session = $this->sshSession;
@@ -383,6 +581,7 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
         return $this;
     }
 
+    /** {@inheritDoc} */
     public function download(
         string $remoteFilePath,
         ?string $localFileName = null,
@@ -398,6 +597,14 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
         return $this;
     }
 
+    /**
+     * The actual download body, wrapped by {@see download()} in the retry
+     * loop. Opens the remote SFTP stream, copies into `$localFileName`
+     * (or the remote basename under `$localPrefix`), and optionally
+     * verifies the size + checksum.
+     *
+     * Returns `true` so the closure passed to {@see retry()} has a value.
+     */
     private function doDownload(
         string $remoteFilePath,
         ?string $localFileName,
@@ -460,6 +667,7 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
                     ));
                 }
             }
+            $this->verifyRemoteHash($savePath, $remoteFilePath);
         } catch (\Throwable $e) {
             $progress?->failed($e);
 
@@ -477,6 +685,7 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
         return true;
     }
 
+    /** {@inheritDoc} */
     public function upload(
         string $localFilePath,
         ?string $remoteFileName = null,
@@ -487,6 +696,12 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
         return $this;
     }
 
+    /**
+     * The actual upload body, wrapped by {@see upload()} in the retry loop.
+     * Honors {@see $atomicUploads} (writes to `.partial-{uuid}`, then
+     * renames onto `$finalPath`); on failure best-effort unlinks the partial
+     * and rethrows so {@see retry()} can decide whether to retry.
+     */
     private function doUpload(
         string $localFilePath,
         ?string $remoteFileName,
@@ -571,6 +786,9 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
                     . $finalPath . ' (rename of partial ' . $writePath . ' failed)',
                 );
             }
+            // Checksum the file at its FINAL path — atomic rename means
+            // the partial path is gone by the time we get here.
+            $this->verifyRemoteHash($localFilePath, $finalPath);
         } catch (\Throwable $e) {
             $progress?->failed($e);
             if ($useAtomic) {
@@ -592,6 +810,7 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
         return true;
     }
 
+    /** {@inheritDoc} */
     public function uploadStream(
         mixed $stream,
         string $remoteFilePath,
@@ -774,6 +993,7 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
         return $copied;
     }
 
+    /** {@inheritDoc} */
     public function resumeUpload(
         string $localFilePath,
         string $remoteFileName,
@@ -788,6 +1008,13 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
         return $this;
     }
 
+    /**
+     * The resume-upload body, wrapped by {@see resumeUpload()} in the
+     * retry loop. Auto-detects the partial size when `$offset` is null,
+     * appends from there to the deterministic `.{basename}.resume`
+     * sibling, and renames onto the final path. Failures leave the
+     * partial in place so the next attempt can resume.
+     */
     private function doResumeUpload(
         string $localFilePath,
         string $remoteFileName,
@@ -903,6 +1130,7 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
                     . $finalPath . ' (rename of partial ' . $partialPath . ' failed)',
                 );
             }
+            $this->verifyRemoteHash($localFilePath, $finalPath);
         } catch (\Throwable $e) {
             $progress?->failed($e);
 
@@ -921,6 +1149,7 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
         return true;
     }
 
+    /** {@inheritDoc} */
     public function resumeDownload(
         string $remoteFilePath,
         string $localFileName,
@@ -937,6 +1166,13 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
         return $this;
     }
 
+    /**
+     * The resume-download body, wrapped by {@see resumeDownload()} in the
+     * retry loop. Auto-detects the local file size when `$offset` is null,
+     * seeks the remote stream to that offset, and appends to the local
+     * file. No-ops cleanly when the local size already equals the remote
+     * size.
+     */
     private function doResumeDownload(
         string $remoteFilePath,
         string $localFileName,
@@ -1035,6 +1271,7 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
                     ));
                 }
             }
+            $this->verifyRemoteHash($savePath, $remoteFilePath);
         } catch (\Throwable $e) {
             $progress?->failed($e);
 
@@ -1072,6 +1309,58 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
                 'reason' => $e->getMessage(),
             ]);
         }
+    }
+
+    /**
+     * If a {@see RemoteHasherInterface} is installed, hash both sides
+     * and throw a {@see TransferException} on mismatch. No-op when no
+     * hasher is configured.
+     *
+     * Called at the end of upload / resumeUpload / download /
+     * resumeDownload — after size verification but before progress
+     * `completed()`.
+     */
+    private function verifyRemoteHash(string $localPath, string $remotePath): void
+    {
+        $hasher = $this->remoteHasher;
+        if ($hasher === null) {
+            return;
+        }
+        $algo = $hasher->algorithm();
+
+        try {
+            $localHex = @hash_file($algo, $localPath);
+        } catch (\ValueError $e) {
+            // PHP 8 throws ValueError on unknown algorithm; translate to
+            // a TransferException so callers see the library's exception
+            // hierarchy rather than a raw VM error.
+            throw new TransferException(\sprintf(
+                'Checksum verification: hash algorithm "%s" is not supported by PHP — %s.',
+                $algo,
+                $e->getMessage(),
+            ));
+        }
+        if ($localHex === false) {
+            throw new TransferException(\sprintf(
+                'Checksum verification: could not hash local file %s with %s.',
+                $localPath,
+                $algo,
+            ));
+        }
+        $remoteHex = $hasher->hash($this, $remotePath);
+        if (! hash_equals(strtolower($localHex), strtolower($remoteHex))) {
+            throw new TransferException(\sprintf(
+                'Checksum mismatch (%s) for %s: local=%s remote=%s',
+                $algo,
+                $remotePath,
+                $localHex,
+                $remoteHex,
+            ));
+        }
+        $this->log('debug', 'Checksum verified', [
+            'remote' => $remotePath,
+            'algorithm' => $algo,
+        ]);
     }
 
     /**
@@ -1157,6 +1446,7 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
         return rtrim($dir, '/') . '/' . $partial;
     }
 
+    /** {@inheritDoc} */
     public function scpDownload(string $remoteFilePath, ?string $localFileName = null): self
     {
         PathValidator::validateRemotePath($remoteFilePath);
@@ -1166,6 +1456,10 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
         return $this;
     }
 
+    /**
+     * SCP-receive body, wrapped by {@see scpDownload()} in the retry loop.
+     * SCP transfers are non-atomic — bytes land at `$savePath` directly.
+     */
     private function doScpDownload(string $remoteFilePath, ?string $localFileName): true
     {
         $session = $this->requireSession();
@@ -1196,6 +1490,7 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
         return true;
     }
 
+    /** {@inheritDoc} */
     public function scpUpload(string $localFilePath, ?string $remoteFileName = null): self
     {
         $this->retry('scpUpload', fn(): true => $this->doScpUpload($localFilePath, $remoteFileName));
@@ -1203,6 +1498,11 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
         return $this;
     }
 
+    /**
+     * SCP-send body, wrapped by {@see scpUpload()} in the retry loop.
+     * SCP transfers are non-atomic — bytes land at the final path in one
+     * pass, with fixed-mode 0o644.
+     */
     private function doScpUpload(string $localFilePath, ?string $remoteFileName): true
     {
         $session = $this->requireSession();
@@ -1235,6 +1535,7 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
         return true;
     }
 
+    /** {@inheritDoc} */
     public function remove(string $remoteFilePath): self
     {
         $sftp = $this->requireSftp();
@@ -1253,6 +1554,7 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
         return $this;
     }
 
+    /** {@inheritDoc} */
     public function rename(string $remoteFilePath, string $newRemoteFilePath): self
     {
         $sftp = $this->requireSftp();
@@ -1272,6 +1574,7 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
         return $this;
     }
 
+    /** {@inheritDoc} */
     public function getFileList(string $remotePath, bool $includeDotEntries = false): array
     {
         PathValidator::validateRemotePath($remotePath);
@@ -1305,6 +1608,8 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
     }
 
     /**
+     * {@inheritDoc}
+     *
      * @return array<int|string, int>
      */
     public function stat(string $remotePath): array
@@ -1320,6 +1625,7 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
         return $result;
     }
 
+    /** {@inheritDoc} */
     public function makeDirectory(string $path, int $mode = 0o755, bool $recursive = false): self
     {
         PathValidator::validateRemotePath($path);
@@ -1335,6 +1641,7 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
         return $this;
     }
 
+    /** {@inheritDoc} */
     public function removeDirectory(string $path): self
     {
         PathValidator::validateRemotePath($path);
@@ -1356,7 +1663,7 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
      *
      * Symlinks are yielded as {@see EntryType::Symlink} but their targets are
      * NOT followed — even if they point at directories. Cycle detection /
-     * follow semantics are explicit follow-ups (see PRODUCTION_GRADE.md §P3).
+     * follow semantics across `walk()` are an explicit follow-up.
      *
      * @return iterable<RemoteEntry>
      * @throws RemoteFilesystemException
@@ -1370,24 +1677,24 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
     }
 
     /**
-     * Recursive directory upload. Walks the local tree top-down, mkdir's
-     * each subdir on the remote, and delegates per-file transfer to
-     * {@see upload()} — so atomic write, retry, file-size verification, and
-     * progress emission all apply to each file in turn.
-     *
-     * Symlinks under the local tree are skipped (recorded in
-     * {@see UploadResult::$skipped}). Conflict mode is overwrite-only for
-     * 1.1 (atomic rename handles it for files; mkdir is idempotent).
+     * Recursive directory upload. Walks the local tree top-down,
+     * mkdir's each subdir on the remote, and delegates per-file
+     * transfer to {@see upload()} — so atomic write, retry, file-size
+     * verification, and progress emission all apply to each file in
+     * turn.
      *
      * @throws ConfigurationException invalid path or missing/unreadable local dir
-     * @throws TransferException per-file failure
-     * @throws RemoteFilesystemException mkdir failed
+     * @throws TransferException per-file failure (when $bestEffort is false)
+     * @throws RemoteFilesystemException mkdir / conflict failed (when $bestEffort is false)
      */
     public function uploadDirectory(
         string $localDir,
         string $remoteDir,
         bool $createRemoteDir = true,
         ?ProgressListenerInterface $progress = null,
+        ConflictPolicy $onConflict = ConflictPolicy::Overwrite,
+        SymlinkPolicy $symlinks = SymlinkPolicy::Skip,
+        bool $bestEffort = false,
     ): UploadResult {
         if (! is_dir($localDir)) {
             throw new ConfigurationException(
@@ -1402,74 +1709,180 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
             $this->ssh2->sftpMkdir($sftp, $remoteDir, 0o755, true);
         }
 
-        // Use $localDir as-is for the relative-path math; the is_dir() check
-        // above already filtered missing roots and adding realpath() here
-        // would only protect against a TOCTOU delete between the two calls
-        // (which propagates as a clear DirectoryIterator error anyway).
         $localRoot = rtrim($localDir, \DIRECTORY_SEPARATOR);
 
-        $iterator = new \RecursiveIteratorIterator(
-            new \RecursiveDirectoryIterator(
-                $localRoot,
-                \RecursiveDirectoryIterator::SKIP_DOTS,
-            ),
-            \RecursiveIteratorIterator::SELF_FIRST,
-        );
-
-        $filesTransferred = 0;
-        $bytesTransferred = 0;
+        $files = 0;
+        $bytes = 0;
         $skipped = [];
+        $failures = [];
+        $visited = [];
 
         $this->log('debug', 'SFTP upload directory start', [
             'local' => $localRoot,
             'remote' => $remoteDir,
+            'conflict' => $onConflict->name,
+            'symlinks' => $symlinks->name,
+            'best_effort' => $bestEffort,
         ]);
 
-        /** @var \SplFileInfo $info */
-        foreach ($iterator as $info) {
-            $relative = substr($info->getPathname(), \strlen($localRoot) + 1);
-            // Normalise Windows-style separators in the relative path so the
-            // remote layout stays POSIX-shaped regardless of host OS.
-            $relativeRemote = str_replace(\DIRECTORY_SEPARATOR, '/', $relative);
-            $remotePath = $remoteDir . '/' . $relativeRemote;
-
-            if ($info->isLink()) {
-                $skipped[] = $info->getPathname();
-                $this->log('debug', 'SFTP upload directory skipped symlink', [
-                    'local' => $info->getPathname(),
-                ]);
-
-                continue;
-            }
-            if ($info->isDir()) {
-                if ($this->ssh2->sftpStat($sftp, $remotePath) === false
-                    && ! $this->ssh2->sftpMkdir($sftp, $remotePath, 0o755, false)) {
-                    throw new RemoteFilesystemException(
-                        'uploadDirectory(): unable to create remote directory ' . $remotePath,
-                    );
-                }
-
-                continue;
-            }
-            // Regular files (and any other entry type) flow through upload()
-            // — the existing "Local file does not exist or is not readable"
-            // wording surfaces sockets / FIFOs / devices with a clear error,
-            // matching the documented "abort on first failure" default.
-            $this->upload($info->getPathname(), $remotePath, $progress);
-            $filesTransferred++;
-            $size = $info->getSize();
-            $bytesTransferred += max(0, (int) $size);
-        }
+        $this->uploadDirectoryRecurse(
+            $localRoot,
+            $remoteDir,
+            $progress,
+            $onConflict,
+            $symlinks,
+            $bestEffort,
+            $visited,
+            $files,
+            $bytes,
+            $skipped,
+            $failures,
+        );
 
         $this->log('info', 'SFTP upload directory ok', [
             'local' => $localRoot,
             'remote' => $remoteDir,
-            'files' => $filesTransferred,
-            'bytes' => $bytesTransferred,
+            'files' => $files,
+            'bytes' => $bytes,
             'skipped' => \count($skipped),
+            'failures' => \count($failures),
         ]);
 
-        return new UploadResult($filesTransferred, $bytesTransferred, $skipped);
+        return new UploadResult(max(0, $files), max(0, $bytes), $skipped, $failures);
+    }
+
+    /**
+     * Manual top-down recursion for uploadDirectory. Replaces the
+     * RecursiveDirectoryIterator path because the iterator can't
+     * cleanly express the (a) conflict-policy probe, (b) symlink-
+     * follow with inode cycle detection, and (c) best-effort
+     * collection without each branch fighting the iterator's flags.
+     *
+     * @param array<string, true> $visited inode-set keyed by 'dev:ino'
+     * @param-out array<string, true> $visited
+     * @param list<string> $skipped
+     * @param-out list<string> $skipped
+     * @param list<DirectoryFailure> $failures
+     * @param-out list<DirectoryFailure> $failures
+     */
+    private function uploadDirectoryRecurse(
+        string $localDir,
+        string $remoteDir,
+        ?ProgressListenerInterface $progress,
+        ConflictPolicy $onConflict,
+        SymlinkPolicy $symlinks,
+        bool $bestEffort,
+        array &$visited,
+        int &$files,
+        int &$bytes,
+        array &$skipped,
+        array &$failures,
+    ): void {
+        $sftp = $this->requireSftp();
+
+        $iter = new \DirectoryIterator($localDir);
+        foreach ($iter as $info) {
+            if ($info->isDot()) {
+                continue;
+            }
+            $localPath = $info->getPathname();
+            $remotePath = $remoteDir . '/' . str_replace(\DIRECTORY_SEPARATOR, '/', $info->getBasename());
+            $isLink = $info->isLink();
+
+            // Symlink policy gate — Skip records and bails; Follow lets
+            // the regular flow handle the (resolved) entry but only
+            // after cycle detection.
+            if ($isLink && $symlinks === SymlinkPolicy::Skip) {
+                $skipped[] = $localPath;
+                $this->log('debug', 'SFTP upload directory skipped symlink', ['local' => $localPath]);
+
+                continue;
+            }
+
+            // For follow mode, classify by RESOLVED target (isDir/isFile
+            // on a SplFileInfo of a symlink follows the link).
+            if ($info->isDir()) {
+                // Inode cycle detection for symlinked dirs only — regular
+                // dirs in a posix tree never form cycles unless someone's
+                // done something exotic with bind mounts; we still
+                // tolerate it because the cost is one stat() per dir.
+                if ($symlinks === SymlinkPolicy::Follow) {
+                    $st = @stat($localPath);
+                    if ($st !== false) {
+                        $key = $st['dev'] . ':' . $st['ino'];
+                        if (isset($visited[$key])) {
+                            $skipped[] = $localPath . ' (cycle)';
+                            $this->log('debug', 'SFTP upload directory skipped cycle', [
+                                'local' => $localPath,
+                            ]);
+
+                            continue;
+                        }
+                        $visited[$key] = true;
+                    }
+                }
+
+                try {
+                    if ($this->ssh2->sftpStat($sftp, $remotePath) === false
+                        && ! $this->ssh2->sftpMkdir($sftp, $remotePath, 0o755, false)) {
+                        throw new RemoteFilesystemException(
+                            'uploadDirectory(): unable to create remote directory ' . $remotePath,
+                        );
+                    }
+                    $this->uploadDirectoryRecurse(
+                        $localPath,
+                        $remotePath,
+                        $progress,
+                        $onConflict,
+                        $symlinks,
+                        $bestEffort,
+                        $visited,
+                        $files,
+                        $bytes,
+                        $skipped,
+                        $failures,
+                    );
+                } catch (\Throwable $e) {
+                    if (! $bestEffort) {
+                        throw $e;
+                    }
+                    $failures[] = new DirectoryFailure($localPath, $e->getMessage(), $e::class);
+                }
+
+                continue;
+            }
+
+            // File (or symlink-to-file under Follow): apply conflict
+            // policy first, then delegate to upload().
+            try {
+                if ($onConflict !== ConflictPolicy::Overwrite
+                    && $this->ssh2->sftpStat($sftp, $remotePath) !== false) {
+                    if ($onConflict === ConflictPolicy::Skip) {
+                        $skipped[] = $localPath;
+                        $this->log('debug', 'SFTP upload directory skipped existing', [
+                            'local' => $localPath,
+                            'remote' => $remotePath,
+                        ]);
+
+                        continue;
+                    }
+
+                    // ConflictPolicy::Fail
+                    throw new RemoteFilesystemException(
+                        'uploadDirectory(): refusing to overwrite existing remote file ' . $remotePath
+                        . ' (ConflictPolicy::Fail)',
+                    );
+                }
+                $this->upload($localPath, $remotePath, $progress);
+                $files++;
+                $bytes += max(0, (int) $info->getSize());
+            } catch (\Throwable $e) {
+                if (! $bestEffort) {
+                    throw $e;
+                }
+                $failures[] = new DirectoryFailure($localPath, $e->getMessage(), $e::class);
+            }
+        }
     }
 
     /**
@@ -1488,6 +1901,9 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
         string $remoteDir,
         string $localDir,
         ?ProgressListenerInterface $progress = null,
+        ConflictPolicy $onConflict = ConflictPolicy::Overwrite,
+        SymlinkPolicy $symlinks = SymlinkPolicy::Skip,
+        bool $bestEffort = false,
     ): DownloadResult {
         PathValidator::validateRemotePath($remoteDir);
         $remoteDir = rtrim($remoteDir, '/');
@@ -1502,19 +1918,27 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
         $filesTransferred = 0;
         $bytesTransferred = 0;
         $skipped = [];
+        $failures = [];
 
         $this->log('debug', 'SFTP download directory start', [
             'remote' => $remoteDir,
             'local' => $localDir,
+            'conflict' => $onConflict->name,
+            'symlinks' => $symlinks->name,
+            'best_effort' => $bestEffort,
         ]);
 
         $this->downloadDirectoryRecurse(
             $remoteDir,
             $localDir,
             $progress,
+            $onConflict,
+            $symlinks,
+            $bestEffort,
             $filesTransferred,
             $bytesTransferred,
             $skipped,
+            $failures,
         );
 
         $this->log('info', 'SFTP download directory ok', [
@@ -1523,13 +1947,14 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
             'files' => $filesTransferred,
             'bytes' => $bytesTransferred,
             'skipped' => \count($skipped),
+            'failures' => \count($failures),
         ]);
 
         // Clamp on the boundary: the helper widens int<0, max> back to
         // plain int through the recursive by-ref parameter, but the
         // counters are only ever incremented so the runtime invariant
         // holds. max(0, ...) re-establishes the type for the value object.
-        return new DownloadResult(max(0, $filesTransferred), max(0, $bytesTransferred), $skipped);
+        return new DownloadResult(max(0, $filesTransferred), max(0, $bytesTransferred), $skipped, $failures);
     }
 
     /**
@@ -1630,47 +2055,101 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
      *
      * @param list<string> $skipped
      * @param-out list<string> $skipped
+     * @param list<DirectoryFailure> $failures
+     * @param-out list<DirectoryFailure> $failures
      */
     private function downloadDirectoryRecurse(
         string $remoteDir,
         string $localDir,
         ?ProgressListenerInterface $progress,
+        ConflictPolicy $onConflict,
+        SymlinkPolicy $symlinks,
+        bool $bestEffort,
         int &$filesTransferred,
         int &$bytesTransferred,
         array &$skipped,
+        array &$failures,
     ): void {
         foreach ($this->getFileList($remoteDir) as $name) {
             $remotePath = $remoteDir . '/' . $name;
             $localPath = $localDir . '/' . $name;
             $type = $this->entryType($remotePath);
+
+            // Symlink / device / FIFO entries: skip by default; under
+            // Follow we'd need lstat-then-stat dance — for the first
+            // cut, document Follow as "no-op on remote side" because
+            // libssh2's per-link target resolution isn't exposed by
+            // ext-ssh2's url_stat consistently across versions.
             if ($type === EntryType::Symlink || $type === EntryType::Other) {
                 $skipped[] = $remotePath;
+                if ($type === EntryType::Symlink && $symlinks === SymlinkPolicy::Follow) {
+                    // Record the gap loudly so the caller knows why their
+                    // symlink got skipped despite Follow being requested.
+                    $this->log('notice', 'SFTP download directory cannot follow remote symlink', [
+                        'remote' => $remotePath,
+                        'reason' => 'remote-side symlink-follow deferred — see CHANGELOG',
+                    ]);
+                }
 
                 continue;
             }
             if ($type === EntryType::Directory) {
-                if (! is_dir($localPath) && ! @mkdir($localPath, 0o755, true) && ! is_dir($localPath)) {
-                    throw new RemoteFilesystemException(
-                        'downloadDirectory(): unable to create local directory ' . $localPath,
+                try {
+                    if (! is_dir($localPath) && ! @mkdir($localPath, 0o755, true) && ! is_dir($localPath)) {
+                        throw new RemoteFilesystemException(
+                            'downloadDirectory(): unable to create local directory ' . $localPath,
+                        );
+                    }
+                    $this->downloadDirectoryRecurse(
+                        $remotePath,
+                        $localPath,
+                        $progress,
+                        $onConflict,
+                        $symlinks,
+                        $bestEffort,
+                        $filesTransferred,
+                        $bytesTransferred,
+                        $skipped,
+                        $failures,
                     );
+                } catch (\Throwable $e) {
+                    if (! $bestEffort) {
+                        throw $e;
+                    }
+                    $failures[] = new DirectoryFailure($remotePath, $e->getMessage(), $e::class);
                 }
-                $this->downloadDirectoryRecurse(
-                    $remotePath,
-                    $localPath,
-                    $progress,
-                    $filesTransferred,
-                    $bytesTransferred,
-                    $skipped,
-                );
 
                 continue;
             }
+
             // EntryType::File
-            $this->download($remotePath, $localPath, $progress);
-            $filesTransferred++;
-            $size = $this->statSize($remotePath);
-            if ($size !== null) {
-                $bytesTransferred += $size;
+            try {
+                if ($onConflict !== ConflictPolicy::Overwrite && is_file($localPath)) {
+                    if ($onConflict === ConflictPolicy::Skip) {
+                        $skipped[] = $remotePath;
+
+                        continue;
+                    }
+
+                    // ConflictPolicy::Fail — local file is the caller's
+                    // problem, not the server's, hence ConfigurationException
+                    // rather than RemoteFilesystemException.
+                    throw new ConfigurationException(
+                        'downloadDirectory(): refusing to overwrite existing local file ' . $localPath
+                        . ' (ConflictPolicy::Fail)',
+                    );
+                }
+                $this->download($remotePath, $localPath, $progress);
+                $filesTransferred++;
+                $size = $this->statSize($remotePath);
+                if ($size !== null) {
+                    $bytesTransferred += $size;
+                }
+            } catch (\Throwable $e) {
+                if (! $bestEffort) {
+                    throw $e;
+                }
+                $failures[] = new DirectoryFailure($remotePath, $e->getMessage(), $e::class);
             }
         }
     }
@@ -1715,6 +2194,7 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
         };
     }
 
+    /** {@inheritDoc} */
     public function fileExists(string $path): bool
     {
         PathValidator::validateRemotePath($path);
@@ -1726,6 +2206,7 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
         return @file_exists($uri);
     }
 
+    /** {@inheritDoc} */
     public function ping(): bool
     {
         $sftp = $this->sftp;
@@ -1893,7 +2374,9 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
      * Run the authentication leg matching the credentials' mode.
      *
      * Lives on the client (not on Credentials) so the {@see CredentialsInterface}
-     * contract can be pure-data and ext-ssh2-free — see P1 in PRODUCTION_GRADE.md.
+     * contract can stay pure-data and ext-ssh2-free — implementing a custom
+     * credentials source (Vault, AWS Secrets Manager, …) must never require
+     * the consumer to load ext-ssh2.
      *
      * @param resource $session
      */
@@ -1901,6 +2384,12 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
     {
         $username = $credentials->getUsername();
         $mode = $credentials->getMode();
+        $host = $this->host ?? '';
+        $port = $this->port ?? 0;
+
+        // Sleep before the auth call when the limiter says so — guards
+        // against accidental account lockout when the CALLER retries.
+        $this->authRateLimiter?->beforeAuth($host, $port, $username);
 
         $ok = match ($mode) {
             AuthMode::None => $this->ssh2->authNone($session, $username),
@@ -1920,6 +2409,7 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
         };
 
         if (! $ok) {
+            $this->authRateLimiter?->recordFailure($host, $port, $username);
             $this->log('notice', 'SSH authentication rejected', [
                 'user' => $username,
                 'mode' => $mode->name,
@@ -1930,6 +2420,7 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
             );
         }
 
+        $this->authRateLimiter?->recordSuccess($host, $port, $username);
         $this->log('info', 'SSH authentication ok', [
             'user' => $username,
             'mode' => $mode->name,
@@ -2008,6 +2499,98 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
         $this->logger?->log($level, $message, array_merge($base, $this->logContext, $context));
     }
 
+    /**
+     * Compare the server's host key against the configured known_hosts file
+     * and either trust, reject, or trust-on-first-use per the policy. The
+     * `expectedFingerprint` check is independent — both run, both must pass.
+     *
+     * The fingerprint we feed into the file is the SHA-256 of the server's
+     * host key in lowercase hex (no `SHA256:` prefix, no colons), to match
+     * {@see KnownHostsFile::verifyHost()}'s contract regardless of which
+     * algorithm/encoding the caller picked for `expectedFingerprint`.
+     *
+     * @param resource $session
+     */
+    private function verifyAgainstKnownHosts(mixed $session, string $host, int $port): void
+    {
+        // doConnect() gates the call site on `knownHostsFile !== null`, so
+        // we don't need to re-check here. Asserting via local var keeps
+        // PHPStan happy without the dead-code return.
+        $file = (string) $this->knownHostsFile;
+        $hostsFile = new KnownHostsFile($file);
+
+        // Hard-coded SHA-1 + HEX (= 1 | 0 = 1). libssh2 < 1.9 doesn't
+        // ship the SHA-256 fingerprint constant, and our libssh2 floor is
+        // older than that. See KnownHostsFile's "Why SHA-1" docblock.
+        $fp = $this->ssh2->fingerprint($session, 1);
+        if ($fp === false) {
+            $this->ssh2->disconnect($session);
+            $this->log('error', 'Known-hosts: host key fingerprint unreadable');
+
+            throw new ConnectionException(\sprintf(
+                'Could not read host key fingerprint for %s:%d.',
+                $host,
+                $port,
+            ));
+        }
+
+        $decision = $hostsFile->verifyHost($host, $port, $fp);
+
+        if ($decision === HostKeyDecision::Mismatch) {
+            $this->ssh2->disconnect($session);
+            $this->log('error', 'Known-hosts: host key mismatch (possible MITM)', [
+                'file' => $file,
+                'fingerprint' => $fp,
+            ]);
+
+            throw new ConnectionException(\sprintf(
+                'Known-hosts mismatch for %s:%d. The server presented a key (%s) that '
+                . 'does not match any entry for this host in %s. Refusing connection.',
+                $host,
+                $port,
+                $fp,
+                $file,
+            ));
+        }
+
+        if ($decision === HostKeyDecision::NoEntries) {
+            if ($this->onUnknownHost === UnknownHostPolicy::Reject) {
+                $this->ssh2->disconnect($session);
+                $this->log('notice', 'Known-hosts: unknown host rejected', [
+                    'file' => $file,
+                    'fingerprint' => $fp,
+                ]);
+
+                throw new ConnectionException(\sprintf(
+                    'Unknown host %s:%d (fingerprint %s) not present in %s. Pass '
+                    . 'UnknownHostPolicy::TrustOnFirstUse to accept new hosts.',
+                    $host,
+                    $port,
+                    $fp,
+                    $file,
+                ));
+            }
+            // TrustOnFirstUse: append and proceed.
+            $hostsFile->appendFingerprint($host, $port, $fp);
+            $this->log('info', 'Known-hosts: TOFU entry appended', [
+                'file' => $file,
+                'fingerprint' => $fp,
+            ]);
+
+            return;
+        }
+
+        $this->log('debug', 'Known-hosts: host key trusted', ['file' => $file]);
+    }
+
+    /**
+     * Open a plain TCP socket to `$host:$port` with the given timeout and
+     * close it immediately. Used as a pre-connect liveness probe so a
+     * dead host fails fast with a clear message rather than blocking in
+     * libssh2's banner exchange.
+     *
+     * @throws ConnectionException when the socket can't be opened within `$timeoutSeconds`.
+     */
     private function probeTcp(string $host, int $port, int $timeoutSeconds): void
     {
         $errno = 0;

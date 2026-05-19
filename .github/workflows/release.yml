@@ -1,0 +1,118 @@
+name: Release
+
+# Triggered when a vX.Y.Z tag is pushed. Two responsibilities:
+# 1. Run the full QA matrix (PHPStan, PHPUnit, php-cs-fixer, composer
+#    audit, Infection) — same gates as `ci.yml` but funneled into a
+#    single dependency for the release job.
+# 2. Create a GitHub Release with the matching CHANGELOG section as
+#    the body.
+#
+# GPG signing of the tag is intentionally NOT in this workflow — it
+# happens at `git tag -s`-time on the maintainer's local machine
+# (GPG keys can't ship in the repo). The workflow VERIFIES the tag is
+# GPG-signed and rejects unsigned tags so we don't accidentally publish
+# an unsigned release.
+#
+# Packagist auto-update: GitHub-Packagist sync is on by default for
+# public repos; explicitly notify the Packagist webhook if a
+# PACKAGIST_TOKEN secret is configured. The notify step is a no-op
+# when the secret is absent.
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+jobs:
+  qa:
+    name: QA gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.2"
+          extensions: ssh2, mbstring
+          coverage: xdebug
+      - name: Composer install
+        run: composer install --no-progress --no-interaction --prefer-dist
+      - name: PHP-CS-Fixer
+        run: composer cs
+      - name: PHPStan
+        run: composer stan
+      - name: PHPUnit (with 100% line coverage gate)
+        env:
+          XDEBUG_MODE: coverage
+        run: |
+          vendor/bin/phpunit --coverage-clover=build/coverage/clover.xml
+          php tests/bin/check-coverage.php build/coverage/clover.xml 100
+      - name: Composer audit
+        run: composer audit --no-dev --locked
+      - name: Infection
+        env:
+          XDEBUG_MODE: coverage
+        run: vendor/bin/infection --threads=4 --no-progress --no-interaction
+
+  release:
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    needs: qa
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify tag is GPG-signed
+        # Refuses to proceed unless the pushed tag carries a valid GPG
+        # signature. The signing key has to be on the maintainer's
+        # machine; CI just validates. Comment this step out for an
+        # unsigned dev tag, but for production it stays.
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          if ! git tag -v "$TAG" 2>&1 | grep -q "Good signature"; then
+            echo "Tag $TAG is NOT GPG-signed (or signature invalid). Refusing to publish."
+            echo "Sign locally with: git tag -s $TAG -m '...' && git push --tags"
+            exit 1
+          fi
+      - name: Extract changelog section for this tag
+        id: changelog
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          VERSION="${TAG#v}"
+          # Pull the section between "## $VERSION" and the next "## " header.
+          awk -v v="$VERSION" '
+            $0 ~ "^## "v {flag=1; next}
+            flag && /^## / {exit}
+            flag {print}
+          ' CHANGELOG.md > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "No CHANGELOG section for $VERSION; falling back to tag message."
+            git tag -l --format='%(contents)' "$TAG" > release-notes.md
+          fi
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: release-notes.md
+          draft: false
+          prerelease: ${{ contains(github.ref, '-rc') || contains(github.ref, '-beta') || contains(github.ref, '-alpha') }}
+
+  notify-packagist:
+    name: Ping Packagist
+    runs-on: ubuntu-latest
+    needs: release
+    # Only fires when the PACKAGIST_TOKEN secret is configured —
+    # github→packagist sync covers most cases automatically; this is
+    # belt-and-braces for repos where the webhook is misconfigured.
+    if: ${{ env.PACKAGIST_TOKEN != '' }}
+    env:
+      PACKAGIST_TOKEN: ${{ secrets.PACKAGIST_TOKEN }}
+      PACKAGIST_USER: ${{ secrets.PACKAGIST_USER }}
+    steps:
+      - name: POST update notification
+        run: |
+          curl -sf -X POST \
+            "https://packagist.org/api/update-package?username=${PACKAGIST_USER}&apiToken=${PACKAGIST_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d '{"repository":{"url":"https://github.com/${{ github.repository }}"}}'

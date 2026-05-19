@@ -29,6 +29,7 @@
     "require-dev": {
         "behat/behat": "^3.14",
         "friendsofphp/php-cs-fixer": "^3.64",
+        "giorgiosironi/eris": "^1.1",
         "infection/infection": "^0.29",
         "phpstan/phpstan": "^2.0",
         "phpstan/phpstan-phpunit": "^2.0",
@@ -68,6 +69,7 @@
         "test": "phpunit",
         "behat": "behat",
         "rector": "rector process --dry-run",
+        "infection": "@php -d xdebug.mode=coverage vendor/bin/infection --threads=4 --no-progress --no-interaction",
         "qa": [
             "@cs",
             "@stan",

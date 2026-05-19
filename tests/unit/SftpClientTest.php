@@ -112,7 +112,7 @@ final class SftpClientTest extends TestCase
     {
         $client = new SftpClient(false, $this->ssh2);
         $this->expectException(ConfigurationException::class);
-        $this->expectExceptionMessage('Credentials must be set before calling connect().');
+        $this->expectExceptionMessage('Credentials must be set before calling connect()');
         $client->connect('example.com');
     }
 
