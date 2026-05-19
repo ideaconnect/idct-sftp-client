@@ -453,11 +453,21 @@ interface SftpClientInterface
 
     /**
      * Recursively yield every entry under `$remoteDir`, post-order
-     * (children before their parent). Symlinks are yielded but their
-     * targets are not followed.
+     * (children before their parent).
+     *
+     * @param SymlinkPolicy $symlinks Symlink handling. `Skip` (default)
+     *        yields each symlink as a {@see EntryType::Symlink} entry
+     *        without descending — even if the target is a directory.
+     *        `Follow` resolves each symlink via `sftpStat()`: links to
+     *        files yield as {@see EntryType::File} (with size), links to
+     *        directories descend into the target with inode-set cycle
+     *        detection (a self-referential link is dropped and logged
+     *        at `debug` rather than infinite-looping), and links to
+     *        sockets / FIFOs / devices fall back to
+     *        {@see EntryType::Symlink}.
      *
      * @return iterable<RemoteEntry>
      * @throws RemoteFilesystemException
      */
-    public function walk(string $remoteDir): iterable;
+    public function walk(string $remoteDir, SymlinkPolicy $symlinks = SymlinkPolicy::Skip): iterable;
 }

@@ -26,6 +26,10 @@ use PHPUnit\Framework\TestCase;
 use Psr\Log\NullLogger;
 
 #[CoversClass(SftpClient::class)]
+#[UsesClass(\IDCT\Networking\Ssh\Retry\RetryClassifier::class)]
+#[UsesClass(\IDCT\Networking\Ssh\Auth\AuthDispatcher::class)]
+#[UsesClass(\IDCT\Networking\Ssh\Transfer\StreamCopier::class)]
+#[UsesClass(\IDCT\Networking\Ssh\Transfer\TcpProbe::class)]
 #[UsesClass(AuthMode::class)]
 #[UsesClass(Credentials::class)]
 #[UsesClass(FingerprintAlgorithm::class)]

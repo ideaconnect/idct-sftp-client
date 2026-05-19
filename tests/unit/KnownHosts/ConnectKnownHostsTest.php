@@ -28,6 +28,10 @@ use PHPUnit\Framework\TestCase;
  * Reject vs TrustOnFirstUse).
  */
 #[CoversClass(SftpClient::class)]
+#[UsesClass(\IDCT\Networking\Ssh\Retry\RetryClassifier::class)]
+#[UsesClass(\IDCT\Networking\Ssh\Auth\AuthDispatcher::class)]
+#[CoversClass(\IDCT\Networking\Ssh\KnownHosts\HostKeyVerifier::class)]
+#[CoversClass(\IDCT\Networking\Ssh\KnownHosts\HostKeyVerification::class)]
 #[UsesClass(KnownHostsFile::class)]
 #[UsesClass(HostKeyDecision::class)]
 #[UsesClass(UnknownHostPolicy::class)]

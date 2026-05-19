@@ -28,6 +28,9 @@ use PHPUnit\Framework\TestCase;
  * `$fixture->remoteExists()`.
  */
 #[CoversClass(SftpClient::class)]
+#[UsesClass(\IDCT\Networking\Ssh\Retry\RetryClassifier::class)]
+#[UsesClass(\IDCT\Networking\Ssh\Auth\AuthDispatcher::class)]
+#[CoversClass(\IDCT\Networking\Ssh\Transfer\StreamCopier::class)]
 #[UsesClass(AuthMode::class)]
 #[UsesClass(Credentials::class)]
 #[UsesClass(NoRetryPolicy::class)]
@@ -478,12 +481,9 @@ final class AtomicUploadAndResumeTest extends TestCase
     {
         // The fseek-guard branch in doResumeUpload / doResumeDownload only
         // fires for pathological stream wrappers (regular-file streams seek
-        // fine for any offset, even past EOF). Exercise the helper directly
-        // via reflection with a known non-seekable stream (php://stdin in
-        // CLI mode rejects fseek).
-        $method = new \ReflectionMethod(SftpClient::class, 'seekOrThrow');
-
-        // Bidirectional pipe — fseek returns -1.
+        // fine for any offset, even past EOF). Exercise the StreamCopier
+        // helper directly with a known non-seekable stream — a bidirectional
+        // socket pair returns -1 on fseek.
         $pipes = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
         self::assertNotFalse($pipes);
         [$reader, $writer] = $pipes;
@@ -491,7 +491,12 @@ final class AtomicUploadAndResumeTest extends TestCase
         try {
             $this->expectException(TransferException::class);
             $this->expectExceptionMessage('Could not seek remote stream to offset 10: /some/path');
-            $method->invoke(null, $reader, 10, 'remote stream', '/some/path');
+            \IDCT\Networking\Ssh\Transfer\StreamCopier::seekOrThrow(
+                $reader,
+                10,
+                'remote stream',
+                '/some/path',
+            );
         } finally {
             fclose($reader);
             fclose($writer);

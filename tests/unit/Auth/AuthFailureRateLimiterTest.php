@@ -26,6 +26,8 @@ use PHPUnit\Framework\TestCase;
  */
 #[CoversClass(AuthFailureRateLimiter::class)]
 #[CoversClass(SftpClient::class)]
+#[UsesClass(\IDCT\Networking\Ssh\Retry\RetryClassifier::class)]
+#[UsesClass(\IDCT\Networking\Ssh\Auth\AuthDispatcher::class)]
 #[UsesClass(AuthMode::class)]
 #[UsesClass(Credentials::class)]
 #[UsesClass(NoRetryPolicy::class)]
@@ -128,6 +130,30 @@ final class AuthFailureRateLimiterTest extends TestCase
         self::assertGreaterThanOrEqual(80, $elapsedMs);
         // Generous upper bound for slow CI; verifies the cap, not exact timing.
         self::assertLessThan(500, $elapsedMs);
+    }
+
+    public function testBeforeAuthDelayGrowsExponentiallyUnderTheCap(): void
+    {
+        // threshold=1, base=20, max=10_000 (cap won't fire). With 3 failures
+        // we have over=2 → delay = 20 * 2^2 = 80 ms. This deliberately
+        // distinguishes between the documented `2 ** $over` and the surviving
+        // mutations (1^over=1, 3^over=9, /2^over=0.25) by picking a base /
+        // exponent combination where each multiplier produces an
+        // assertion-distinguishable wall-clock delay.
+        $r = new AuthFailureRateLimiter(thresholdFailures: 1, baseDelayMs: 20, maxDelayMs: 10_000);
+        for ($i = 0; $i < 3; $i++) {
+            $r->recordFailure('h', 22, 'u');
+        }
+
+        $start = microtime(true);
+        $r->beforeAuth('h', 22, 'u');
+        $elapsedMs = (int) ((microtime(true) - $start) * 1000);
+
+        // Expected 80ms; 1^over collapses to ~20ms, 3^over balloons to
+        // ~180ms, / instead of * gives ~5ms. The 60..140 window catches
+        // the 2^over mutation specifically.
+        self::assertGreaterThanOrEqual(60, $elapsedMs, '2 ** $over should produce ~80ms; smaller suggests the multiplier mutated');
+        self::assertLessThan(140, $elapsedMs, '2 ** $over should produce ~80ms; larger suggests 3 ** $over or similar');
     }
 
     public function testSftpClientAccessorRoundtrip(): void

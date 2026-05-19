@@ -32,6 +32,8 @@ use PHPUnit\Framework\TestCase;
  * needing an SSH server.
  */
 #[CoversClass(SftpClient::class)]
+#[UsesClass(\IDCT\Networking\Ssh\Auth\AuthDispatcher::class)]
+#[UsesClass(\IDCT\Networking\Ssh\Transfer\StreamCopier::class)]
 #[UsesClass(AuthMode::class)]
 #[UsesClass(Credentials::class)]
 #[UsesClass(NoRetryPolicy::class)]
@@ -39,6 +41,7 @@ use PHPUnit\Framework\TestCase;
 #[UsesClass(\IDCT\Networking\Ssh\Path\PathValidator::class)]
 #[UsesClass(\IDCT\Networking\Ssh\Exception\SshException::class)]
 #[UsesClass(\IDCT\Networking\Ssh\Exception\ConfigurationException::class)]
+#[UsesClass(\IDCT\Networking\Ssh\Exception\ConnectionException::class)]
 #[UsesClass(\IDCT\Networking\Ssh\Exception\InvalidPathException::class)]
 #[UsesClass(\IDCT\Networking\Ssh\Exception\RemoteFilesystemException::class)]
 #[UsesClass(\IDCT\Networking\Ssh\Exception\TransferException::class)]
@@ -46,6 +49,7 @@ use PHPUnit\Framework\TestCase;
 #[UsesClass(EntryType::class)]
 #[UsesClass(UploadResult::class)]
 #[UsesClass(DownloadResult::class)]
+#[UsesClass(\IDCT\Networking\Ssh\Directory\SymlinkPolicy::class)]
 final class DirectoryOperationsTest extends TestCase
 {
     private SftpFixture $fixture;
@@ -143,6 +147,212 @@ final class DirectoryOperationsTest extends TestCase
         self::assertNull($byPath['/tree/link.txt']->size);
     }
 
+    public function testWalkFollowResolvesSymlinkToFileAsFile(): void
+    {
+        $this->fixture->writeRemote('/tree/target.txt', 'payload');
+        symlink(
+            $this->fixture->rootDir . '/tree/target.txt',
+            $this->fixture->rootDir . '/tree/link.txt',
+        );
+
+        $client = $this->newConnectedClientWithFakeFs();
+        /** @var list<RemoteEntry> $entries */
+        $entries = iterator_to_array(
+            $client->walk('/tree', \IDCT\Networking\Ssh\Directory\SymlinkPolicy::Follow),
+            false,
+        );
+
+        $byPath = [];
+        foreach ($entries as $e) {
+            $byPath[$e->path] = $e;
+        }
+        // Under Follow, the link reports as a File with the target's size.
+        self::assertSame(EntryType::File, $byPath['/tree/link.txt']->type);
+        self::assertSame(7, $byPath['/tree/link.txt']->size, 'size should match the target file');
+        // Target itself also yielded — Follow doesn't deduplicate.
+        self::assertSame(EntryType::File, $byPath['/tree/target.txt']->type);
+    }
+
+    public function testWalkFollowDescendsIntoSymlinkedDirectory(): void
+    {
+        // Real subtree at /tree/payload; symlink at /tree/alias points to it.
+        $this->fixture->writeRemote('/tree/payload/inside.txt', 'x');
+        symlink(
+            $this->fixture->rootDir . '/tree/payload',
+            $this->fixture->rootDir . '/tree/alias',
+        );
+
+        $client = $this->newConnectedClientWithFakeFs();
+        /** @var list<RemoteEntry> $entries */
+        $entries = iterator_to_array(
+            $client->walk('/tree', \IDCT\Networking\Ssh\Directory\SymlinkPolicy::Follow),
+            false,
+        );
+
+        $paths = array_map(static fn(RemoteEntry $e): string => $e->path, $entries);
+
+        // Walking through the symlink surfaces the target's child under
+        // the LINK path — that's the point of Follow.
+        self::assertContains('/tree/alias/inside.txt', $paths);
+        // And under the canonical path too (both branches were visited).
+        self::assertContains('/tree/payload/inside.txt', $paths);
+        // The alias entry itself appears as a Directory now (not Symlink).
+        $byPath = [];
+        foreach ($entries as $e) {
+            $byPath[$e->path] = $e;
+        }
+        self::assertSame(EntryType::Directory, $byPath['/tree/alias']->type);
+    }
+
+    public function testWalkFollowDetectsCycleAndDropsRepeatedTarget(): void
+    {
+        // Self-cycle: /tree/loop is a symlink pointing at /tree itself.
+        // Without cycle detection this would re-enter /tree forever.
+        $this->fixture->writeRemote('/tree/leaf.txt', 'leaf');
+        symlink(
+            $this->fixture->rootDir . '/tree',
+            $this->fixture->rootDir . '/tree/loop',
+        );
+
+        $client = $this->newConnectedClientWithFakeFs();
+        /** @var list<RemoteEntry> $entries */
+        $entries = iterator_to_array(
+            $client->walk('/tree', \IDCT\Networking\Ssh\Directory\SymlinkPolicy::Follow),
+            false,
+        );
+
+        $paths = array_map(static fn(RemoteEntry $e): string => $e->path, $entries);
+        // Real leaf is reachable.
+        self::assertContains('/tree/leaf.txt', $paths);
+        // The loop link is not yielded as a Directory entry (the cycle
+        // detector skipped it before we descended).
+        self::assertNotContains('/tree/loop', $paths);
+        // And we definitely didn't recurse into the cycle.
+        self::assertNotContains('/tree/loop/leaf.txt', $paths);
+    }
+
+    public function testWalkFollowPreservesSymlinkWhenTargetUnstatable(): void
+    {
+        // Dangling symlink — link exists, target doesn't. sftpStat on
+        // the link's path returns false; Follow should fall back to
+        // yielding the link as Symlink rather than crashing or
+        // dropping it silently.
+        $this->fixture->writeRemote('/tree/anchor.txt', 'a');
+        symlink(
+            $this->fixture->rootDir . '/tree/nonexistent-target',
+            $this->fixture->rootDir . '/tree/dangling',
+        );
+
+        $client = $this->newConnectedClientWithFakeFs();
+        /** @var list<RemoteEntry> $entries */
+        $entries = iterator_to_array(
+            $client->walk('/tree', \IDCT\Networking\Ssh\Directory\SymlinkPolicy::Follow),
+            false,
+        );
+
+        $byPath = [];
+        foreach ($entries as $e) {
+            $byPath[$e->path] = $e;
+        }
+        self::assertArrayHasKey('/tree/dangling', $byPath);
+        self::assertSame(EntryType::Symlink, $byPath['/tree/dangling']->type);
+    }
+
+    public function testWalkFollowSkipsSymlinkWhenStatLacksDevAndIno(): void
+    {
+        // Some legacy SFTP servers strip dev/ino out of the stat
+        // response. Without those keys the cycle detector can't decide
+        // whether re-entering is safe; the conservative call is to
+        // skip rather than risk unbounded recursion. Simulate that
+        // pathology by returning a stat array WITH a directory mode
+        // but WITHOUT dev/ino keys for the link path.
+        $this->fixture->writeRemote('/tree/payload/inside.txt', 'x');
+        symlink(
+            $this->fixture->rootDir . '/tree/payload',
+            $this->fixture->rootDir . '/tree/sketchy',
+        );
+
+        $client = $this->newConnectedClientWithFakeFs(
+            sftpStat: function (mixed $h, string $p): array|false {
+                $real = $this->fixture->rootDir . '/' . ltrim($p, '/');
+                $st = @stat($real);
+                if ($st === false) {
+                    return false;
+                }
+                // For the suspect link path only, drop dev+ino to
+                // mimic a stat-poor server response.
+                if ($p === '/tree/sketchy') {
+                    unset($st['dev'], $st['ino']);
+                    unset($st[0], $st[1]);
+                }
+
+                return $st;
+            },
+        );
+
+        /** @var list<RemoteEntry> $entries */
+        $entries = iterator_to_array(
+            $client->walk('/tree', \IDCT\Networking\Ssh\Directory\SymlinkPolicy::Follow),
+            false,
+        );
+
+        $paths = array_map(static fn(RemoteEntry $e): string => $e->path, $entries);
+        // The suspect link itself isn't recursed (no Directory entry
+        // for it) and isn't yielded as Other / File either — the
+        // skip-on-unreadable-inode branch fires.
+        self::assertNotContains('/tree/sketchy', $paths);
+        self::assertNotContains('/tree/sketchy/inside.txt', $paths);
+        // The canonical path is still walked normally.
+        self::assertContains('/tree/payload/inside.txt', $paths);
+    }
+
+    public function testWalkFollowYieldsSymlinkForUnusualTargetTypes(): void
+    {
+        // Symlink to a FIFO/socket/device: targetType resolves to
+        // EntryType::Other, but the wrapper preserves the Symlink
+        // classification rather than collapsing to Other (the caller
+        // gets to see "there's a link here" without us pretending we
+        // know what's behind it).
+        $this->fixture->writeRemote('/tree/anchor.txt', 'a');
+        symlink(
+            $this->fixture->rootDir . '/tree/unusual',
+            $this->fixture->rootDir . '/tree/special',
+        );
+
+        $client = $this->newConnectedClientWithFakeFs(
+            sftpStat: function (mixed $h, string $p): array|false {
+                $real = $this->fixture->rootDir . '/' . ltrim($p, '/');
+                // For the special link, fake a FIFO mode (S_IFIFO=0o010000)
+                // so the match in walkInternal falls into the `default`
+                // (EntryType::Other) arm.
+                if ($p === '/tree/special') {
+                    return [
+                        'mode' => 0o010000 | 0o644,
+                        'dev' => 1,
+                        'ino' => 999_999,
+                        'size' => 0,
+                    ];
+                }
+                $st = @stat($real);
+
+                return $st === false ? false : $st;
+            },
+        );
+
+        /** @var list<RemoteEntry> $entries */
+        $entries = iterator_to_array(
+            $client->walk('/tree', \IDCT\Networking\Ssh\Directory\SymlinkPolicy::Follow),
+            false,
+        );
+
+        $byPath = [];
+        foreach ($entries as $e) {
+            $byPath[$e->path] = $e;
+        }
+        self::assertArrayHasKey('/tree/special', $byPath);
+        self::assertSame(EntryType::Symlink, $byPath['/tree/special']->type);
+    }
+
     public function testWalkFallsBackToSftpStatWhenLstatUnsupported(): void
     {
         // Simulate ancient libssh2 by making the stream-wrapper's url_stat
@@ -233,6 +443,39 @@ final class DirectoryOperationsTest extends TestCase
         $this->expectException(ConfigurationException::class);
         $this->expectExceptionMessage('local directory does not exist');
         $client->uploadDirectory('/no/such/path', '/remote/dest');
+    }
+
+    public function testUploadDirectoryOnEmptySourceProducesZeroCountsResult(): void
+    {
+        // Empty source dir: no files, no failures, no skips. Exercises
+        // the `max(0, $files)` / `max(0, $bytes)` clamps on the
+        // UploadResult constructor where both arguments are 0.
+        $root = $this->fixture->rootDir . '/empty-src';
+        mkdir($root);
+
+        $client = $this->newConnectedClientWithFakeFs();
+        $result = $client->uploadDirectory($root, '/data/dest');
+
+        self::assertSame(0, $result->filesTransferred);
+        self::assertSame(0, $result->bytesTransferred);
+        self::assertSame([], $result->skipped);
+        self::assertSame([], $result->failures);
+    }
+
+    public function testDownloadDirectoryOnEmptyRemoteProducesZeroCountsResult(): void
+    {
+        // Empty remote dir: same shape as above but for the
+        // DownloadResult clamp pair on the download path.
+        mkdir($this->fixture->rootDir . '/data/empty-dest', 0o755, true);
+        $localDest = $this->fixture->rootDir . '/dl-empty';
+
+        $client = $this->newConnectedClientWithFakeFs();
+        $result = $client->downloadDirectory('/data/empty-dest', $localDest);
+
+        self::assertSame(0, $result->filesTransferred);
+        self::assertSame(0, $result->bytesTransferred);
+        self::assertSame([], $result->skipped);
+        self::assertSame([], $result->failures);
     }
 
     public function testUploadDirectoryRejectsInvalidRemotePath(): void
@@ -474,6 +717,52 @@ final class DirectoryOperationsTest extends TestCase
         $client = $this->newConnectedClientWithFakeFs();
         $this->expectException(InvalidPathException::class);
         $client->removeDirectoryTree('../etc');
+    }
+
+    // ─── before-connect guards: each public directory entry-point must
+    // call requireSftp() up front so callers see a typed
+    // ConnectionException, not a lazier downstream error. ──────────────
+
+    public function testWalkBeforeConnectThrowsConnectionException(): void
+    {
+        $client = new SftpClient(false, $this->ssh2, new NoRetryPolicy());
+        $this->expectException(\IDCT\Networking\Ssh\Exception\ConnectionException::class);
+        // walk() is a generator; the requireSftp() guard must fire BEFORE
+        // the generator is constructed so callers don't have to start
+        // iterating just to find out the client isn't connected.
+        $client->walk('/tree');
+    }
+
+    public function testUploadDirectoryBeforeConnectThrowsConnectionException(): void
+    {
+        $client = new SftpClient(false, $this->ssh2, new NoRetryPolicy());
+        $localDir = sys_get_temp_dir() . '/sftp-test-' . bin2hex(random_bytes(4));
+        mkdir($localDir);
+        try {
+            $this->expectException(\IDCT\Networking\Ssh\Exception\ConnectionException::class);
+            $client->uploadDirectory($localDir, '/tree');
+        } finally {
+            @rmdir($localDir);
+        }
+    }
+
+    public function testDownloadDirectoryBeforeConnectThrowsConnectionException(): void
+    {
+        $client = new SftpClient(false, $this->ssh2, new NoRetryPolicy());
+        $localDir = sys_get_temp_dir() . '/sftp-test-' . bin2hex(random_bytes(4));
+        $this->expectException(\IDCT\Networking\Ssh\Exception\ConnectionException::class);
+        try {
+            $client->downloadDirectory('/tree', $localDir);
+        } finally {
+            @rmdir($localDir);
+        }
+    }
+
+    public function testRemoveDirectoryTreeBeforeConnectThrowsConnectionException(): void
+    {
+        $client = new SftpClient(false, $this->ssh2, new NoRetryPolicy());
+        $this->expectException(\IDCT\Networking\Ssh\Exception\ConnectionException::class);
+        $client->removeDirectoryTree('/tree');
     }
 
     // ─── helpers ───────────────────────────────────────────────────────

@@ -16,15 +16,40 @@
         "summary": "build/infection/summary.log"
     },
     "tmpDir": "var/infection",
-    // Calibrated 2026-05-18 against the actual test suite (~86% MSI,
-    // ~87% covered MSI). Surviving mutants are dominated by harmless
-    // operand-reordering on exception messages and redundant `(string)`
-    // casts; chasing them to 95% would force brittle
-    // expectExceptionMessage assertions for no real bug-catching value.
-    // Both gates are kept 2pp under the current baseline so any real
+    // Calibrated against the actual test suite. Surviving mutants are
+    // dominated by:
+    //  - harmless operand-reordering on exception/log messages
+    //  - redundant `(string)` casts at adapter boundaries
+    //  - log-call mutations (logs are observability — `LoggerRedactionLintTest`
+    //    is the safety net for what we DO assert about them; per-record
+    //    content drift would force brittle `expectsAt` chains across every
+    //    SftpClient test for no real bug-catching value)
+    // Chasing the score to 95% would force exactly that brittleness. Both
+    // gates are kept 2pp under the post-rebaseline score so any real
     // test-gap mutant trips the build.
-    "minMsi": 85,
-    "minCoveredMsi": 85,
+    // Calibrated 2pp under the post-bundle-3 baseline (MSI 90%,
+    // covered 90%). Raising the floor any further would punish
+    // legitimate equivalent mutants (exception-message concat
+    // permutations etc.) without catching real bugs.
+    "minMsi": 88,
+    "minCoveredMsi": 88,
+    "mutators": {
+        // `@default` keeps the standard mutator set (without this, listing
+        // ONLY the global-ignore filter below disables all mutators —
+        // MutatorResolver only registers mutators it sees enabled).
+        "@default": true,
+        // Skip mutations on log emission lines. Logger output is
+        // observability, not behaviour — `LoggerRedactionLintTest` is the
+        // safety net for the only rule that matters (secrets never reach
+        // the logger). Per-record content / level / call-removal mutations
+        // would force every SftpClient test to assert log shape, with no
+        // real bug-catching value. Same rationale for the inner
+        // `$this->logger?->log()` helper that every emission funnels through.
+        "global-ignoreSourceCodeByRegex": [
+            ".*\\$this->log\\(.*",
+            ".*\\$this->logger\\?->log\\(.*"
+        ]
+    },
     "testFramework": "phpunit",
     "testFrameworkOptions": "--testsuite=unit"
 }

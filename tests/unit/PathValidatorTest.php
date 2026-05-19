@@ -94,6 +94,19 @@ final class PathValidatorTest extends TestCase
         PathValidator::validateRemotePath("/uploads/good\nbad");
     }
 
+    public function testPathWithBothCrAndLfRejected(): void
+    {
+        // Exercises the short-circuit path where the LHS (`str_contains
+        // $path, "\r"`) returns true and the RHS never evaluates. Without
+        // this case the `||` branch coverage for line 74 has one arm
+        // (LHS-true-RHS-skipped) that's never hit, since the existing
+        // testCarriageReturnRejected sends a path with `\r` but no `\n`
+        // — both halves of the OR get evaluated for that specific input.
+        $this->expectException(InvalidPathException::class);
+        $this->expectExceptionMessage('CR or LF');
+        PathValidator::validateRemotePath("/uploads/g\r\nood");
+    }
+
     /**
      * @return iterable<string, array{string}>
      */

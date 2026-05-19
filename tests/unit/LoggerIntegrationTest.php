@@ -23,6 +23,9 @@ use PHPUnit\Framework\TestCase;
  * carry the right structured fields.
  */
 #[CoversClass(SftpClient::class)]
+#[UsesClass(\IDCT\Networking\Ssh\Retry\RetryClassifier::class)]
+#[CoversClass(\IDCT\Networking\Ssh\Auth\AuthDispatcher::class)]
+#[UsesClass(\IDCT\Networking\Ssh\Transfer\StreamCopier::class)]
 #[UsesClass(AuthMode::class)]
 #[UsesClass(Credentials::class)]
 #[UsesClass(\IDCT\Networking\Ssh\Exception\AuthenticationException::class)]

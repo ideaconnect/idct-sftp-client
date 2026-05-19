@@ -31,6 +31,9 @@ use PHPUnit\Framework\TestCase;
  *   and honour the atomic upload flag.
  */
 #[CoversClass(SftpClient::class)]
+#[UsesClass(\IDCT\Networking\Ssh\Retry\RetryClassifier::class)]
+#[UsesClass(\IDCT\Networking\Ssh\Auth\AuthDispatcher::class)]
+#[UsesClass(\IDCT\Networking\Ssh\Transfer\StreamCopier::class)]
 #[UsesClass(AuthMode::class)]
 #[UsesClass(Credentials::class)]
 #[UsesClass(NoRetryPolicy::class)]
@@ -427,6 +430,23 @@ final class StreamingAndProgressTest extends TestCase
         $this->expectExceptionMessage('must be an open resource');
         // @phpstan-ignore-next-line — deliberately passing a non-resource
         $client->downloadStream('/source.bin', 'not a resource');
+    }
+
+    public function testDownloadStreamRejectsInvalidRemotePath(): void
+    {
+        $client = $this->newConnectedClient();
+        $sink = fopen('php://memory', 'r+b');
+        self::assertNotFalse($sink);
+        try {
+            $this->expectException(\IDCT\Networking\Ssh\Exception\InvalidPathException::class);
+            // Traversal path — PathValidator must reject before we hit any
+            // SFTP I/O; if the validate call is ever dropped from the
+            // downloadStream entry, this test fails with a different
+            // exception (or none at all).
+            $client->downloadStream('../etc/passwd', $sink);
+        } finally {
+            fclose($sink);
+        }
     }
 
     public function testDownloadStreamMissingRemoteThrows(): void

@@ -377,6 +377,21 @@ final class SftpContext implements Context
         $this->toxiproxyApi('POST', '/proxies/' . $name . '/toxics', $payload);
     }
 
+    /**
+     * Flip the proxy's `enabled` flag. Disabling drops all in-flight
+     * connections (the existing SFTP session is reset); re-enabling
+     * resumes forwarding so a fresh reconnect can complete.
+     *
+     * @Given /^the "([^"]+)" proxy is (disabled|enabled)$/
+     */
+    public function toggleProxyEnabled(string $name, string $state): void
+    {
+        $payload = json_encode([
+            'enabled' => $state === 'enabled',
+        ], \JSON_THROW_ON_ERROR);
+        $this->toxiproxyApi('POST', '/proxies/' . $name, $payload);
+    }
+
     private function toxiproxyDelete(string $name): void
     {
         // 404 is fine (proxy might not exist). Anything else, ignore for

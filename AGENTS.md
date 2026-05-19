@@ -131,20 +131,104 @@ CI runs the same on PHP 8.2 / 8.3 / 8.4 — see
   resolution; expect any new ext-ssh2 typing to need an
   `@phpstan-ignore-next-line` at the wrapper boundary.
 
+## Architecture — the SftpClient collaborator split
+
+`SftpClient` is the public façade; it owns the lifecycle (`connect`,
+`close`, the retry/lazy-reconnect loop, `$logger` /
+`$logContext`) and dispatches into small **stateless collaborators**
+that each own one concern. The split exists so the public class
+stays readable (one screen of public API + lifecycle wiring) and
+each collaborator is unit-testable in isolation.
+
+Each collaborator is a `final` class with **static methods** —
+no shared mutable state, every dependency passed as an explicit
+argument. This keeps them pure-data-in / pure-data-out and avoids
+the trap where a collaborator silently captures references to
+`$this->sftp` / `$this->ssh2` and you can't tell from a method
+signature what it touches.
+
+| Collaborator | Owns | Inputs |
+|---|---|---|
+| [`Transfer\StreamCopier`](src/Transfer/StreamCopier.php) | Chunked stream copy with progress emission; partial-path naming for atomic uploads; defensive seek. | `$from`, `$to`, `$chunkSize`, optional `ProgressListenerInterface`. |
+| [`Transfer\TcpProbe`](src/Transfer/TcpProbe.php) | Pre-connect TCP reachability probe so dead hosts fail fast before libssh2's banner exchange. | `$host`, `$port`, `$timeoutSeconds`. |
+| [`KnownHosts\HostKeyVerifier`](src/KnownHosts/HostKeyVerifier.php) + [`HostKeyVerification`](src/KnownHosts/HostKeyVerification.php) | OpenSSH known_hosts file verification at connect time, TOFU append, mismatch detection. | `$session`, `$host`, `$port`, `$file`, `$onUnknownHost`, `Ssh2FunctionsInterface`. |
+| [`Auth\AuthDispatcher`](src/Auth/AuthDispatcher.php) | `AuthMode` → `ssh2_auth_*` dispatch + multi-factor "both" mode. | `$session`, `CredentialsInterface`, `Ssh2FunctionsInterface`. |
+| [`Retry\RetryClassifier`](src/Retry/RetryClassifier.php) | "Is this exception retryable?" matrix + transient-message-fragment allow-list. | `SshException`. |
+
+Rules of thumb when adding new collaborators:
+1. **No reference to `$this` from inside the collaborator** — pass
+   everything explicitly. This is what makes them stateless.
+2. **Logging stays on the client.** The collaborator returns a
+   typed value (or throws); `SftpClient` decides what to log.
+   Avoids passing a logger reference into every helper.
+3. **Behaviour change goes through the collaborator's tests**, not
+   through `SftpClientTest`. The latter mocks the collaborator's
+   surface (or in some cases re-tests through the public API).
+
+### Why the retry loop + directory recursion stay on `SftpClient`
+
+The original REVIEW.md target was **< 1500 lines** for the public
+class. After the extractions above `SftpClient.php` sits at
+**~2,460** — clearly above target but not arbitrarily so. The
+remaining bulk is two clusters that **can't follow the stateless
+static-collaborator pattern without making the design worse**:
+
+1. **The retry loop (`retry()` + lazy reconnect).** The loop reads
+   and writes `$this->sshSession` / `$this->sftp` (clearing them
+   when `ping()` reports the session dead, repopulating them via
+   `doConnect()` on reconnect). Extracting it forces either (a) a
+   long parameter list `(closure $operation, mixed &$session,
+   mixed &$sftp, …)` that's ugly and easy to mis-wire, or (b) the
+   collaborator holding a reference to `SftpClient`, which makes
+   the "stateless" rule a lie. The stateless **classification**
+   piece moved out already (`RetryClassifier::isRetryable()`);
+   that's the only part that didn't need session state.
+2. **Directory recursion (`walkInternal`, `uploadDirectoryRecurse`,
+   `downloadDirectoryRecurse`, `removeTreeRecurse`,
+   `entryType`).** Each recursion step needs the live SFTP handle,
+   the `ssh2` adapter, AND callbacks back into `upload()` /
+   `download()` (so per-file transfers still honour atomic write,
+   retry, progress, and size verification). A "stateless walker"
+   would receive 5+ closures plus the SFTP resource — a constructor
+   so heavy it's effectively a hidden `SftpClient` reference.
+
+So: ~960 lines that look like "should be extractable" but aren't
+without losing the property that makes the existing collaborators
+worth their weight. If a `Retry\RetryRunner` / `Directory\DirectoryWalker`
+ever gets revisited, expect to first need a separate design pass on
+**stateful collaborators** — likely passing `SftpClient` itself as a
+narrow internal interface (a `TransferRuntime` projection that
+exposes only `ssh2`, `sftp`, `chunkSize`, `requireSftp()`, and the
+log helper). That's a follow-up project, not a same-day fix.
+
+The line-count signal still matters — `SftpClient.php` growing past
+~2,800 lines again should trigger a re-evaluation of whether more
+extraction has become worth the abstraction cost.
+
 ## Useful files at a glance
 
 ### Source layout (domain-grouped sub-namespaces)
 
 ```
 src/
-├── Auth/            AuthMode, Credentials, CredentialsInterface
+├── Auth/            AuthMode, Credentials, CredentialsInterface,
+│                    AuthFailureRateLimiter, CredentialsLoaderInterface,
+│                    StaticCredentialsLoader
+├── Checksum/        RemoteHasherInterface, ShellSumRemoteHasher,
+│                    RedownloadRemoteHasher
+├── Directory/       ConflictPolicy, DirectoryFailure, DownloadResult,
+│                    EntryType, RemoteEntry, SymlinkPolicy, UploadResult
 ├── HostKey/         FingerprintAlgorithm, FingerprintEncoding
-├── Retry/           RetryPolicyInterface, ExponentialBackoffRetryPolicy, NoRetryPolicy
+├── KnownHosts/      KnownHostsFile, HostKeyDecision, UnknownHostPolicy
 ├── Path/            PathValidator
 ├── Progress/        ProgressListenerInterface
+├── Retry/           RetryPolicyInterface, ExponentialBackoffRetryPolicy,
+│                    NoRetryPolicy
+├── Security/        SecurityProfile
 ├── Ssh2/            Ssh2Functions, Ssh2FunctionsInterface
+├── Transfer/        StreamCopier (and future collaborators)
 ├── Exception/       single-root hierarchy (SshException + 6 leaves)
-├── SftpClient.php
+├── SftpClient.php   (public façade + lifecycle + retry loop)
 └── SftpClientInterface.php
 ```
 

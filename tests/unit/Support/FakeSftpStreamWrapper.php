@@ -142,7 +142,10 @@ final class FakeSftpStreamWrapper
         }
 
         $local = $this->toLocal($path);
-        if (! file_exists($local)) {
+        // is_link() catches dangling symlinks too (file_exists follows
+        // links and returns false on broken ones, which would
+        // mis-report the link as "missing" for lstat-style calls).
+        if (! file_exists($local) && ! is_link($local)) {
             return false;
         }
 

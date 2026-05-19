@@ -18,6 +18,7 @@ use PHPUnit\Framework\TestCase;
 
 #[CoversClass(StaticCredentialsLoader::class)]
 #[CoversClass(SftpClient::class)]
+#[UsesClass(\IDCT\Networking\Ssh\Auth\AuthDispatcher::class)]
 #[UsesClass(AuthMode::class)]
 #[UsesClass(Credentials::class)]
 #[UsesClass(NoRetryPolicy::class)]

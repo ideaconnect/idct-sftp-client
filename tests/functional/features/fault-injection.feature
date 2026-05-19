@@ -24,3 +24,19 @@ Feature: Behaviour under controlled network faults
     When I upload "bw.txt" to "/data/bw.txt" with the listener
     Then the listener observed the lifecycle started, progress, completed for "upload"
     And the remote file "/data/bw.txt" contains "0123456789ABCDEF"
+
+  Scenario: A killed session is lazily reconnected on the next operation
+    # Toxiproxy `disable` resets every connection through the proxy
+    # without tearing the proxy itself down — perfect simulation of a
+    # network blip that drops the SSH session while the client object
+    # is still alive. The retry wrapper inside SftpClient should
+    # detect the dead session via ping(), reconnect transparently
+    # using the stored connect args, and complete the second upload.
+    Given I have a local file "first.txt" containing "before-the-blip"
+    When I upload "first.txt" to "/data/first.txt"
+    Then the remote file "/data/first.txt" contains "before-the-blip"
+    Given the "sftp-fault" proxy is disabled
+    And the "sftp-fault" proxy is enabled
+    And I have a local file "second.txt" containing "after-the-blip"
+    When I upload "second.txt" to "/data/second.txt"
+    Then the remote file "/data/second.txt" contains "after-the-blip"

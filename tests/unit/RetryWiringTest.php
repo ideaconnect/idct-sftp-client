@@ -30,6 +30,9 @@ use PHPUnit\Framework\TestCase;
  * a multi-retry test stays in tens of milliseconds.
  */
 #[CoversClass(SftpClient::class)]
+#[CoversClass(\IDCT\Networking\Ssh\Retry\RetryClassifier::class)]
+#[UsesClass(\IDCT\Networking\Ssh\Auth\AuthDispatcher::class)]
+#[UsesClass(\IDCT\Networking\Ssh\Transfer\StreamCopier::class)]
 #[UsesClass(AuthMode::class)]
 #[UsesClass(Credentials::class)]
 #[UsesClass(ExponentialBackoffRetryPolicy::class)]
@@ -292,16 +295,11 @@ final class RetryWiringTest extends TestCase
     }
 
     // ─── defensive guards (reachable only via reflection) ─────────────
-
-    public function testIsRetryableReturnsFalseForConfigurationException(): void
-    {
-        // ConfigurationException can't reach the retry helper through normal
-        // flow (connect()'s "credentials must be set" check throws BEFORE the
-        // retry wrapper). We invoke the private classifier directly to cover
-        // the defensive `return false` branch for ConfigurationException.
-        $r = new \ReflectionMethod(SftpClient::class, 'isRetryable');
-        self::assertFalse($r->invoke(null, new ConfigurationException('test')));
-    }
+    //
+    // The retry classifier matrix moved out to
+    // `IDCT\Networking\Ssh\Retry\RetryClassifier` (and is covered by
+    // `RetryClassifierTest`); only the SftpClient-specific defensive
+    // guards live here.
 
     public function testDoConnectThrowsConfigurationExceptionWhenScopeNotPrepared(): void
     {

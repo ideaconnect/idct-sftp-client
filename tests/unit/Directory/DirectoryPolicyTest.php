@@ -29,6 +29,9 @@ use PHPUnit\Framework\TestCase;
  * class adds the policy matrix.
  */
 #[CoversClass(SftpClient::class)]
+#[UsesClass(\IDCT\Networking\Ssh\Retry\RetryClassifier::class)]
+#[UsesClass(\IDCT\Networking\Ssh\Auth\AuthDispatcher::class)]
+#[UsesClass(\IDCT\Networking\Ssh\Transfer\StreamCopier::class)]
 #[CoversClass(ConflictPolicy::class)]
 #[CoversClass(SymlinkPolicy::class)]
 #[CoversClass(DirectoryFailure::class)]
