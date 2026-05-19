@@ -7,8 +7,11 @@ namespace IDCT\Networking\Ssh;
 use IDCT\Networking\Ssh\Auth\AuthFailureRateLimiter;
 use IDCT\Networking\Ssh\Auth\CredentialsInterface;
 use IDCT\Networking\Ssh\Auth\CredentialsLoaderInterface;
+use IDCT\Networking\Ssh\Checksum\RemoteHasherInterface;
+use IDCT\Networking\Ssh\Directory\ConflictPolicy;
 use IDCT\Networking\Ssh\Directory\DownloadResult;
 use IDCT\Networking\Ssh\Directory\RemoteEntry;
+use IDCT\Networking\Ssh\Directory\SymlinkPolicy;
 use IDCT\Networking\Ssh\Directory\UploadResult;
 use IDCT\Networking\Ssh\Exception\AuthenticationException;
 use IDCT\Networking\Ssh\Exception\ConfigurationException;
@@ -213,6 +216,43 @@ interface SftpClientInterface
      */
     public function getRetryPolicy(): RetryPolicyInterface;
 
+    /**
+     * Install an opt-in server-side checksum verifier. When set, every
+     * successful {@see upload()}, {@see resumeUpload()}, and
+     * {@see download()} computes both ends' digests and throws
+     * {@see TransferException} on mismatch. Pass `null` to disable
+     * (the default). Stream-based transfers
+     * ({@see uploadStream()} / {@see downloadStream()}) are NOT
+     * verified — the source / sink is consumed by the time the hash
+     * would run.
+     */
+    public function setRemoteHasher(?RemoteHasherInterface $hasher): self;
+
+    /**
+     * Return the active checksum verifier, or `null` if none is
+     * installed.
+     */
+    public function getRemoteHasher(): ?RemoteHasherInterface;
+
+    /**
+     * Replace the caller-side static log context merged into every
+     * record emitted by the client. The keys `correlation_id`,
+     * `host`, and `port` are reserved — entries with those keys are
+     * stripped and overwritten by the client itself.
+     *
+     * @param array<string, mixed> $context
+     */
+    public function setLogContext(array $context): self;
+
+    /**
+     * Return the currently-installed log context (empty array if none
+     * was set). The reserved keys (`correlation_id`, `host`, `port`)
+     * never appear here — they're injected per-record.
+     *
+     * @return array<string, mixed>
+     */
+    public function getLogContext(): array;
+
     /** @throws TransferException */
     public function download(
         string $remoteFilePath,
@@ -328,36 +368,77 @@ interface SftpClientInterface
     /** @throws RemoteFilesystemException */
     public function removeDirectory(string $path): self;
 
+    /**
+     * Whether `$path` exists on the remote. Bypasses PHP's stat cache
+     * (calls `clearstatcache(true, $uri)` first) so two consecutive
+     * checks always see fresh remote state. Returns `false` on any
+     * underlying failure rather than throwing — by contract this
+     * method never raises.
+     */
     public function fileExists(string $path): bool;
 
     /**
      * Recursive directory upload. Atomic + retry + progress apply per file
-     * (each file goes through {@see upload()}). Symlinks under the local
-     * tree are skipped and listed in {@see UploadResult::$skipped}.
+     * (each file goes through {@see upload()}). Per-file failures and skips
+     * accumulate into the returned {@see UploadResult}.
+     *
+     * @param ConflictPolicy $onConflict What to do when the remote already
+     *        has a file at the target path: `Overwrite` (default; atomic
+     *        rename does this naturally), `Skip` (record in
+     *        {@see UploadResult::$skipped}), or `Fail` (raise
+     *        {@see RemoteFilesystemException}).
+     * @param SymlinkPolicy $symlinks Whether to follow local symlinks.
+     *        `Skip` (default) records each symlink in
+     *        {@see UploadResult::$skipped}; `Follow` resolves the target
+     *        with inode-set cycle detection.
+     * @param bool $bestEffort When `true`, per-file failures are collected
+     *        into {@see UploadResult::$failures} instead of aborting the
+     *        whole operation. Default `false` matches the historical
+     *        "abort on first failure" behaviour.
      *
      * @throws ConfigurationException missing local dir or invalid remote path
-     * @throws TransferException per-file failure
-     * @throws RemoteFilesystemException mkdir failed
+     * @throws TransferException per-file failure (when `$bestEffort` is false)
+     * @throws RemoteFilesystemException mkdir failed, or `Fail`-policy conflict
      */
     public function uploadDirectory(
         string $localDir,
         string $remoteDir,
         bool $createRemoteDir = true,
         ?ProgressListenerInterface $progress = null,
+        ConflictPolicy $onConflict = ConflictPolicy::Overwrite,
+        SymlinkPolicy $symlinks = SymlinkPolicy::Skip,
+        bool $bestEffort = false,
     ): UploadResult;
 
     /**
      * Recursive directory download. Mirrors {@see uploadDirectory()} in
-     * reverse; symlinks on the remote are skipped.
+     * reverse; the policy / best-effort knobs behave identically.
      *
-     * @throws ConfigurationException invalid remote path / local dir unwritable
-     * @throws TransferException per-file failure
+     * `SymlinkPolicy::Follow` on the remote side is currently a no-op
+     * (ext-ssh2's `url_stat` doesn't reliably expose per-link target
+     * resolution across libssh2 versions); remote symlinks are always
+     * skipped and logged at `notice` level when `Follow` was requested.
+     *
+     * @param ConflictPolicy $onConflict What to do when the local
+     *        destination already has a file: `Overwrite` (default),
+     *        `Skip` (recorded in {@see DownloadResult::$skipped}), or
+     *        `Fail` (raise {@see ConfigurationException}).
+     * @param SymlinkPolicy $symlinks See note above — remote-side
+     *        follow is not implemented.
+     * @param bool $bestEffort When `true`, per-file failures accumulate
+     *        in {@see DownloadResult::$failures} instead of aborting.
+     *
+     * @throws ConfigurationException invalid remote path, local dir unwritable, or `Fail`-policy conflict
+     * @throws TransferException per-file failure (when `$bestEffort` is false)
      * @throws RemoteFilesystemException remote stat / readdir failed
      */
     public function downloadDirectory(
         string $remoteDir,
         string $localDir,
         ?ProgressListenerInterface $progress = null,
+        ConflictPolicy $onConflict = ConflictPolicy::Overwrite,
+        SymlinkPolicy $symlinks = SymlinkPolicy::Skip,
+        bool $bestEffort = false,
     ): DownloadResult;
 
     /**

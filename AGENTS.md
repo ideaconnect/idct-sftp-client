@@ -102,9 +102,21 @@ CI runs the same on PHP 8.2 / 8.3 / 8.4 — see
 - **PHPStan level max on `src/` only.** Tests are validated by PHPUnit at
   runtime; running PHPStan over them adds noise (mock objects can't satisfy
   `resource` parameter types) without catching real bugs.
-- **`@phpstan-ignore-*` is allowed only inside [`src/Ssh2Functions.php`](src/Ssh2Functions.php)** —
+- **`@phpstan-ignore-*` is allowed only inside [`src/Ssh2/Ssh2Functions.php`](src/Ssh2/Ssh2Functions.php)** —
   the single documented boundary over the procedural ext-ssh2 API.
   Disallowed elsewhere in `src/`.
+- **PHP `@`-operator suppression is a separate convention.** It is
+  expected on the direct ext-ssh2 calls inside
+  [`Ssh2Functions`](src/Ssh2/Ssh2Functions.php) (libssh2 emits
+  `E_WARNING` on every recoverable false-return, which PHPUnit / Behat
+  convert to exceptions and would short-circuit the typed exceptions
+  the wrapper exists to throw). It is *also* allowed on stream-wrapper
+  opens (`@fopen('ssh2.sftp://…')`) and stdlib file ops
+  (`@hash_file`, `@file_put_contents`) elsewhere in `src/` — these
+  stream wrappers raise `E_WARNING` on remote-side failures whose
+  false-return is the typed signal we then convert into an
+  `SshException`. New `@`-sites outside `Ssh2Functions` need an
+  inline comment justifying which warning they suppress.
 - **100% line coverage on `src/`** excluding `Ssh2Functions.php` (covered
   by Behat). The gate is enforced by
   [`tests/bin/check-coverage.php`](tests/bin/check-coverage.php) in CI.

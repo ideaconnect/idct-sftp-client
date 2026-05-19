@@ -218,9 +218,7 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
     }
 
     /**
-     * Replace the caller-side static log context. The keys correlation_id,
-     * host, and port are reserved; entries with those keys are stripped and
-     * will be overwritten by the client itself.
+     * {@inheritDoc}
      *
      * @param array<string, mixed> $context
      */
@@ -230,6 +228,16 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
         $this->logContext = $context;
 
         return $this;
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * @return array<string, mixed>
+     */
+    public function getLogContext(): array
+    {
+        return $this->logContext;
     }
 
     /**
@@ -353,18 +361,11 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
     }
 
     /**
-     * Install a server-side checksum verifier. When set, every
-     * successful {@see upload()}, {@see resumeUpload()}, and
-     * {@see download()} computes both sides' digests and throws
-     * a {@see TransferException} on mismatch.
+     * {@inheritDoc}
      *
-     * Defaults to `null` (no checksum verification). Stock options:
+     * Stock implementations live in `src/Checksum/`:
      *  - {@see \IDCT\Networking\Ssh\Checksum\ShellSumRemoteHasher} (ssh2_exec sha256sum)
-     *  - {@see \IDCT\Networking\Ssh\Checksum\RedownloadRemoteHasher} (re-fetch and hash)
-     *
-     * Stream-based transfers ({@see uploadStream()} / {@see downloadStream()})
-     * are NOT checksum-verified — the source / sink stream is consumed
-     * by the time we'd need to hash it.
+     *  - {@see \IDCT\Networking\Ssh\Checksum\RedownloadRemoteHasher} (re-fetch + hash)
      */
     public function setRemoteHasher(?RemoteHasherInterface $hasher): self
     {
@@ -373,10 +374,7 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
         return $this;
     }
 
-    /**
-     * Return the active server-side checksum verifier, or `null` if none
-     * was installed via {@see setRemoteHasher()}.
-     */
+    /** {@inheritDoc} */
     public function getRemoteHasher(): ?RemoteHasherInterface
     {
         return $this->remoteHasher;
@@ -1677,15 +1675,12 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
     }
 
     /**
-     * Recursive directory upload. Walks the local tree top-down,
-     * mkdir's each subdir on the remote, and delegates per-file
-     * transfer to {@see upload()} — so atomic write, retry, file-size
-     * verification, and progress emission all apply to each file in
-     * turn.
+     * {@inheritDoc}
      *
-     * @throws ConfigurationException invalid path or missing/unreadable local dir
-     * @throws TransferException per-file failure (when $bestEffort is false)
-     * @throws RemoteFilesystemException mkdir / conflict failed (when $bestEffort is false)
+     * Walks the local tree top-down (so dirs land before the files
+     * inside them), `mkdir`s each subdir on the remote, and delegates
+     * per-file transfer to {@see upload()} — atomic write, retry,
+     * file-size verification, and progress emission all apply per file.
      */
     public function uploadDirectory(
         string $localDir,
@@ -1886,16 +1881,10 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
     }
 
     /**
-     * Recursive directory download. Mirrors {@see uploadDirectory()} in the
-     * opposite direction: walks the remote tree top-down, mkdir's each
-     * subdir locally, and delegates per-file transfer to {@see download()}.
+     * {@inheritDoc}
      *
-     * Symlinks on the remote are skipped (recorded in
-     * {@see DownloadResult::$skipped}).
-     *
-     * @throws ConfigurationException invalid remote path
-     * @throws TransferException per-file failure
-     * @throws RemoteFilesystemException remote stat / readdir failed
+     * Walks the remote tree top-down, `mkdir`s each subdir locally,
+     * and delegates per-file transfer to {@see download()}.
      */
     public function downloadDirectory(
         string $remoteDir,

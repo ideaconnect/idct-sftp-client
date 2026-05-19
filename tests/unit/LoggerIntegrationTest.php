@@ -126,6 +126,8 @@ final class LoggerIntegrationTest extends TestCase
             'port' => 999,
             'safe_key' => 'kept',
         ]);
+        // getLogContext mirrors what was stored after the reserved-key strip.
+        self::assertSame(['safe_key' => 'kept'], $client->getLogContext());
         $this->ssh2->method('connect')->willReturn($this->session);
         $this->ssh2->method('authPassword')->willReturn(true);
         $this->ssh2->method('sftp')->willReturn($this->sftpHandle);

@@ -287,7 +287,7 @@ Behaviour:
 > **Verified by Behat:**
 > [`atomic-and-resume.feature`](tests/functional/features/atomic-and-resume.feature)
 > (atomic round-trip, resume from server-side partial, resume download into a partial local, noop when already complete),
-> [`readme.feature → disableAtomicUploads writes the destination directly`](tests/functional/features/readme.feature).
+> [`readme.feature → disableAtomicUploads writes the destination directly (no partial)`](tests/functional/features/readme.feature).
 > **Unit tests:** [`AtomicUploadAndResumeTest`](tests/unit/AtomicUploadAndResumeTest.php).
 > **Runnable:** [`examples/03-resume-upload.php`](examples/03-resume-upload.php).
 
@@ -484,7 +484,8 @@ final class MyPolicy implements RetryPolicyInterface
 > [`fault-injection.feature`](tests/functional/features/fault-injection.feature)
 > (latency + bandwidth-cap toxics: retry holds up under real adversity),
 > [`readme.feature → setRetryPolicy(NoRetryPolicy) at runtime takes effect`](tests/functional/features/readme.feature),
-> [`readme.feature → ping() returns true / false`](tests/functional/features/readme.feature).
+> [`readme.feature → ping() returns true on a healthy session`](tests/functional/features/readme.feature),
+> [`readme.feature → ping() returns false after close()`](tests/functional/features/readme.feature).
 > **Unit tests:** [`RetryWiringTest`](tests/unit/RetryWiringTest.php),
 > [`ExponentialBackoffRetryPolicyTest`](tests/unit/ExponentialBackoffRetryPolicyTest.php),
 > [`NoRetryPolicyTest`](tests/unit/NoRetryPolicyTest.php).
@@ -529,8 +530,19 @@ $client->upload('/var/sources/report.csv', '/abs/dest.csv');  // → /abs/dest.c
 `setRemotePrefix` is applied to BOTH sides of `rename()` (the original 0.x
 applied it only to the source — that was bug B6, fixed in 1.0).
 
-> **Verified by Behat:** [`readme.feature → setRemotePrefix applies to relative paths`](tests/functional/features/readme.feature),
+Every remote path (with or without a prefix) goes through `PathValidator`
+before any SFTP call. Rejected inputs: null bytes (`\0`), CR/LF and other
+C0/C1 control characters, `.` / `..` components, paths over 4096 bytes by
+default. Absolute paths bypass the configured remote prefix rather than
+concatenating to it (T6 contract); the joined result is re-validated so
+attackers can't smuggle traversal *through* the prefix.
+
+> **Verified by Behat:**
+> [`malicious-paths.feature`](tests/functional/features/malicious-paths.feature)
+> (T1 traversal / T3 CR-LF / T4 length / T5 dot-component / T6 prefix bypass against the live atmoz/sftp container),
+> [`readme.feature → setRemotePrefix applies to relative paths`](tests/functional/features/readme.feature),
 > [`readme.feature → an absolute remote path bypasses the remote prefix (T6 contract)`](tests/functional/features/readme.feature).
+> **Unit tests:** [`PathValidatorTest`](tests/unit/PathValidatorTest.php) + [`Path/PathValidatorPropertyTest`](tests/unit/Path/PathValidatorPropertyTest.php) (T2 null-byte and other byte-level cases — `.feature` files can't carry those bytes literally).
 
 ## Error handling
 
