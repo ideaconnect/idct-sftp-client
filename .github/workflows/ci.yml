@@ -40,14 +40,38 @@ jobs:
         uses: shivammathur/setup-php@v2
         with:
           php-version: ${{ matrix.php }}
-          extensions: ssh2, mbstring
+          extensions: ssh2, mbstring, xdebug
           coverage: xdebug
       - name: Composer install
         run: composer install --no-progress --no-interaction --prefer-dist
+      # Fail-fast on the floor build if xdebug didn't actually load —
+      # setup-php's `coverage: xdebug` install is occasionally flaky on a
+      # given PHP-minor + xdebug-version pairing, and a missing driver
+      # makes PHPUnit silently skip the coverage report (the "no coverage
+      # driver" runner warning isn't caught by phpunit.xml's failOnWarning,
+      # which only fires on test-level warnings). Without this gate, the
+      # symptom surfaces three steps later as "clover.xml not found",
+      # which is far from the actual cause.
+      - name: Verify xdebug is loaded
+        if: matrix.php == '8.2'
+        run: |
+          if ! php -r 'exit(extension_loaded("xdebug") ? 0 : 1);'; then
+            echo "::error::xdebug is not loaded — setup-php install must have skipped it."
+            php -m
+            exit 1
+          fi
       - name: PHPUnit
         env:
           XDEBUG_MODE: coverage
-        run: vendor/bin/phpunit --coverage-clover=build/coverage/clover.xml
+        # mkdir guarantees PHPUnit's clover writer has a parent dir to
+        # write into — some PHPUnit/xdebug combos don't auto-create it.
+        run: |
+          mkdir -p build/coverage
+          vendor/bin/phpunit --coverage-clover=build/coverage/clover.xml
+          if [ "${{ matrix.php }}" = "8.2" ] && [ ! -s build/coverage/clover.xml ]; then
+            echo "::error::PHPUnit completed but did not produce build/coverage/clover.xml (driver missing, or writer failed)."
+            exit 1
+          fi
       - name: Enforce 100% line coverage
         if: matrix.php == '8.2'
         run: php tests/bin/check-coverage.php build/coverage/clover.xml 100
