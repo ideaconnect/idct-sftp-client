@@ -40,10 +40,38 @@ final class ExponentialBackoffRetryPolicyTest extends TestCase
         new ExponentialBackoffRetryPolicy(maxRetries: 0);
     }
 
+    public function testAcceptsMaxRetriesOfExactlyOne(): void
+    {
+        // Boundary: the guard reads `< 1`, so 1 must construct cleanly.
+        // Kills the `$maxRetries < 1` → `<= 1` mutant which would
+        // wrongly reject 1.
+        $p = new ExponentialBackoffRetryPolicy(maxRetries: 1);
+        self::assertSame(1, $p->maxRetries);
+    }
+
     public function testRejectsNegativeBaseMs(): void
     {
         $this->expectException(\InvalidArgumentException::class);
         new ExponentialBackoffRetryPolicy(baseMs: -1);
+    }
+
+    public function testAcceptsBaseMsOfExactlyZero(): void
+    {
+        // Boundary: the guard is `< 0`, so 0 must construct. baseMs=0
+        // is a legitimate "no minimum delay" choice. Kills the
+        // `$baseMs < 0` → `<= 0` mutant.
+        $p = new ExponentialBackoffRetryPolicy(baseMs: 0, maxMs: 1000);
+        self::assertSame(0, $p->baseMs);
+    }
+
+    public function testAcceptsMaxMsOfExactlyZero(): void
+    {
+        // Boundary: the guard is `< 0`, so 0 must construct. maxMs=0
+        // means "never wait" which combined with baseMs=0 is a
+        // degenerate-but-valid configuration. Kills the
+        // `$maxMs < 0` → `<= 0` mutant.
+        $p = new ExponentialBackoffRetryPolicy(baseMs: 0, maxMs: 0);
+        self::assertSame(0, $p->maxMs);
     }
 
     public function testRejectsBaseGreaterThanMax(): void

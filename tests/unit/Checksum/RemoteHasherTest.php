@@ -119,6 +119,66 @@ final class RemoteHasherTest extends TestCase
         self::assertStringContainsString("'/path with'", $captured);
     }
 
+    public function testShellSumHasherCommandStructureIsExactlyBinaryThenSpaceThenEscapedPath(): void
+    {
+        // Pinning the EXACT command string is what guards shell-injection:
+        // a regression that drops the space between binary and path, or
+        // re-orders the operands, or fails to use escapeshellarg, would
+        // silently produce a malformed/unsafe command. Concat-permutation
+        // mutants on this line all fail this assertion.
+        $captured = null;
+        $client = $this->newConnectedClient();
+        $this->ssh2->method('exec')->willReturnCallback(
+            static function (mixed $session, string $cmd) use (&$captured): mixed {
+                $captured = $cmd;
+                $stream = fopen('php://memory', 'r+b');
+                if ($stream === false) {
+                    return false;
+                }
+                fwrite($stream, str_repeat('0', 64) . '  /x');
+                rewind($stream);
+
+                return $stream;
+            },
+        );
+
+        $hasher = new ShellSumRemoteHasher('sha256', 'sha256sum');
+        $hasher->hash($client, '/some/path with spaces');
+
+        self::assertSame(
+            "sha256sum " . escapeshellarg('/some/path with spaces'),
+            $captured,
+            'shell command must be exactly: `<binary> <escapeshellarg(path)>`',
+        );
+    }
+
+    public function testShellSumHasherUsesCustomBinaryVerbatim(): void
+    {
+        // Mirror of the above for a non-default binary. If the concat
+        // permutation drops $this->binary entirely, the captured command
+        // would lack the binary name and this assertion would fail.
+        $captured = null;
+        $client = $this->newConnectedClient();
+        $this->ssh2->method('exec')->willReturnCallback(
+            static function (mixed $session, string $cmd) use (&$captured): mixed {
+                $captured = $cmd;
+                $stream = fopen('php://memory', 'r+b');
+                if ($stream === false) {
+                    return false;
+                }
+                fwrite($stream, str_repeat('a', 40) . '  /x');
+                rewind($stream);
+
+                return $stream;
+            },
+        );
+
+        $hasher = new ShellSumRemoteHasher('sha1', 'sha1sum');
+        $hasher->hash($client, '/p');
+
+        self::assertSame("sha1sum '/p'", $captured);
+    }
+
     public function testShellSumHasherThrowsWhenExecReturnsFalse(): void
     {
         $client = $this->newConnectedClient();

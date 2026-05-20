@@ -167,7 +167,8 @@ final class DirectoryPolicyTest extends TestCase
             symlinks: SymlinkPolicy::Follow,
         );
 
-        // Cycle was detected; real file still transferred exactly once.
+        // Cycle was detected; real file transferred exactly once.
+        self::assertSame(1, $result->filesTransferred, 'real.txt uploaded exactly once');
         self::assertSame('real', $this->fixture->readRemote('/remote/inner/real.txt'));
         // The cycle entry is in skipped with a "(cycle)" marker.
         $cycleHits = array_filter(
@@ -175,6 +176,36 @@ final class DirectoryPolicyTest extends TestCase
             static fn(string $p): bool => str_contains($p, '(cycle)'),
         );
         self::assertNotEmpty($cycleHits, 'expected the cycle entry to be recorded as skipped');
+    }
+
+    public function testUploadDirectoryFollowDetectsCycleNestedDeepInSubtree(): void
+    {
+        // Cycle inside a subdir, not at the root:
+        //   src/A/B/loop -> src/A/B
+        // The recurser's visited set adds /src/A/B's inode on its first
+        // descent (regular-dir branch under Follow), so when the loop
+        // symlink resolves to /src/A/B on the second pass, the cycle is
+        // caught. Without cycle detection this recurses without bound.
+        $root = $this->fixture->rootDir . '/src';
+        mkdir($root . '/A/B', 0o755, true);
+        file_put_contents($root . '/A/B/leaf.txt', 'leaf');
+        symlink($root . '/A/B', $root . '/A/B/loop');
+
+        $client = $this->newConnectedClientWithFakeFs(atomic: false);
+        $result = $client->uploadDirectory(
+            $root,
+            '/remote',
+            symlinks: SymlinkPolicy::Follow,
+        );
+
+        // Leaf transferred once; no unbounded recursion.
+        self::assertSame(1, $result->filesTransferred);
+        self::assertSame('leaf', $this->fixture->readRemote('/remote/A/B/leaf.txt'));
+        $cycleHits = array_filter(
+            $result->skipped,
+            static fn(string $p): bool => str_contains($p, '(cycle)'),
+        );
+        self::assertNotEmpty($cycleHits, 'deep cycle should still be recorded under Follow');
     }
 
     // ─── Best-effort on upload ──────────────────────────────────────
@@ -365,6 +396,39 @@ final class DirectoryPolicyTest extends TestCase
         self::assertSame(1, $result->filesTransferred);
         self::assertCount(1, $result->failures);
         self::assertSame(ConfigurationException::class, $result->failures[0]->exceptionClass);
+    }
+
+    public function testDownloadDirectoryBestEffortStillRaisesUnderAbortMode(): void
+    {
+        // Sanity: bestEffort=false (the default) propagates a per-file
+        // conflict instead of accumulating it. Same setup as the
+        // bestEffort=true case above; only the flag is flipped.
+        $this->fixture->writeRemote('/source/a.txt', 'a');
+        $localDest = $this->fixture->rootDir . '/dest';
+        mkdir($localDest, 0o755, true);
+        file_put_contents($localDest . '/a.txt', 'EXISTS');
+
+        $client = $this->newConnectedClientWithFakeFs();
+        $this->expectException(ConfigurationException::class);
+        $client->downloadDirectory('/source', $localDest, onConflict: ConflictPolicy::Fail);
+    }
+
+    public function testDownloadDirectoryOverwriteRemainsDefault(): void
+    {
+        // No `onConflict` argument — default is Overwrite. Existing local
+        // file must be replaced silently.
+        $this->fixture->writeRemote('/source/a.txt', 'remote-NEW');
+        $localDest = $this->fixture->rootDir . '/dest';
+        mkdir($localDest, 0o755, true);
+        file_put_contents($localDest . '/a.txt', 'local-OLD');
+
+        $client = $this->newConnectedClientWithFakeFs();
+        $result = $client->downloadDirectory('/source', $localDest);
+
+        self::assertSame(1, $result->filesTransferred);
+        self::assertSame([], $result->skipped);
+        self::assertSame([], $result->failures);
+        self::assertSame('remote-NEW', file_get_contents($localDest . '/a.txt'));
     }
 
     public function testDownloadDirectoryLogsWhenSymlinkFollowRequestedButUnsupported(): void

@@ -90,9 +90,13 @@ jobs:
         # and OpenSSH 9.x (full OpenSSH daemon). Both fixtures are brought
         # up in the same docker-compose call; the SFTP_PORT env var
         # parameterises the Behat suite.
+        # `behat_tags` opts the atmoz job out of @needs-shell scenarios
+        # (SCP, ShellSumRemoteHasher — both require the `scp` / shell
+        # access that atmoz/sftp's chrooted internal-sftp doesn't
+        # provide). The openssh job runs everything.
         server:
-          - { name: atmoz,   port: 2222 }
-          - { name: openssh, port: 2223 }
+          - { name: atmoz,   port: 2222, behat_tags: "~@needs-shell" }
+          - { name: openssh, port: 2223, behat_tags: "" }
     steps:
       - uses: actions/checkout@v4
       - name: Setup PHP
@@ -112,7 +116,12 @@ jobs:
       - name: Behat (${{ matrix.server.name }})
         env:
           SFTP_PORT: ${{ matrix.server.port }}
-        run: vendor/bin/behat --no-colors --format=pretty
+        run: |
+          if [ -n "${{ matrix.server.behat_tags }}" ]; then
+            vendor/bin/behat --no-colors --format=pretty --tags="${{ matrix.server.behat_tags }}"
+          else
+            vendor/bin/behat --no-colors --format=pretty
+          fi
       - name: Stop SFTP fixtures
         if: always()
         run: docker compose -f tests/functional/docker-compose.yml down -v

@@ -15,6 +15,14 @@ on:
         description: "Seconds between transfer cycles."
         required: false
         default: "30"
+  # Nightly smoke. 03:00 UTC ≈ 05:00 Europe/Warsaw (summer) /
+  # 04:00 (winter) — adjust if you want a different local hour.
+  # Scheduled runs use the input defaults (`||` fallbacks in the
+  # soak step below) because `github.event.inputs.*` is empty when
+  # the trigger is `schedule`. The full 24h variant still needs
+  # `workflow_dispatch` + a self-hosted runner.
+  schedule:
+    - cron: "0 3 * * *"
 
 jobs:
   soak:
@@ -40,10 +48,13 @@ jobs:
       - name: Soak
         env:
           SFTP_PORT: "2222"
+        # `||` fallbacks cover the `schedule` trigger where the
+        # inputs object is empty; workflow_dispatch always supplies
+        # the input defaults declared above.
         run: |
           php tests/soak/soak.php \
-            "${{ github.event.inputs.duration_seconds }}" \
-            "${{ github.event.inputs.period_seconds }}"
+            "${{ github.event.inputs.duration_seconds || '900' }}" \
+            "${{ github.event.inputs.period_seconds || '30' }}"
       - name: Upload soak summary
         if: always()
         uses: actions/upload-artifact@v4

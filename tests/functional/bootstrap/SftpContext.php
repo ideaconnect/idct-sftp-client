@@ -12,8 +12,10 @@ use Behat\Hook\BeforeSuite;
 use IDCT\Networking\Ssh\Auth\Credentials;
 use IDCT\Networking\Ssh\Auth\StaticCredentialsLoader;
 use IDCT\Networking\Ssh\Checksum\RedownloadRemoteHasher;
+use IDCT\Networking\Ssh\Directory\ConflictPolicy;
 use IDCT\Networking\Ssh\Directory\DownloadResult;
 use IDCT\Networking\Ssh\Directory\EntryType;
+use IDCT\Networking\Ssh\Directory\SymlinkPolicy;
 use IDCT\Networking\Ssh\Directory\RemoteEntry;
 use IDCT\Networking\Ssh\Directory\UploadResult;
 use IDCT\Networking\Ssh\Exception\AuthenticationException;
@@ -161,7 +163,12 @@ final class SftpContext implements Context
      */
     public function iHaveALocalFile(string $name, string $contents): void
     {
-        file_put_contents($this->tmpDir . '/' . $name, $contents);
+        $path = $this->tmpDir . '/' . $name;
+        $parent = \dirname($path);
+        if (! is_dir($parent)) {
+            mkdir($parent, 0o755, true);
+        }
+        file_put_contents($path, $contents);
     }
 
     /**
@@ -289,6 +296,21 @@ final class SftpContext implements Context
         // verb from "Then ... contains" so the scenario reads naturally.
         $seed = $this->tmpDir . '/__seed_' . bin2hex(random_bytes(3));
         file_put_contents($seed, $contents);
+        // Ensure the parent dir exists so seeding into a fresh subtree
+        // (e.g. /data/dest/a.txt before /data/dest itself exists) works.
+        // The "already empty" Background scrubs /data between scenarios.
+        $parent = \dirname($remotePath);
+        if ($parent !== '' && $parent !== '/' && $parent !== '.') {
+            try {
+                $this->requireClient()->makeDirectory($parent, 0o755, true);
+            } catch (RemoteFilesystemException) {
+                // Already exists — fine. atmoz/sftp doesn't surface
+                // EEXIST distinctly so we swallow any mkdir failure
+                // here and let the upload below surface the REAL
+                // error (permission denied etc.) if the dir genuinely
+                // can't be created.
+            }
+        }
         $this->requireClient()
             ->disableAtomicUploads()
             ->upload($seed, $remotePath)
@@ -655,6 +677,215 @@ final class SftpContext implements Context
     }
 
     /**
+     * Create a symlink under the local fixture tmpdir. Target may be a
+     * relative path (interpreted relative to the link's parent dir, so
+     * `parent` resolves to `..` style targets) OR an absolute path.
+     * The link source is always relative to the per-scenario tmpdir so
+     * scenarios stay isolated.
+     *
+     * @Given /^the local directory "([^"]+)" has a symlink "([^"]+)" pointing to "([^"]+)"$/
+     */
+    public function localDirectoryHasSymlink(string $dir, string $linkName, string $target): void
+    {
+        $parent = $this->tmpDir . '/' . trim($dir, '/');
+        if (! is_dir($parent)) {
+            mkdir($parent, 0o755, true);
+        }
+        $linkPath = $parent . '/' . ltrim($linkName, '/');
+        // Resolve `parent` / `self` shortcuts so the scenario reads naturally.
+        $resolved = match ($target) {
+            'self'   => $parent,
+            'parent' => \dirname($parent),
+            default  => str_starts_with($target, '/')
+                ? $target
+                : $parent . '/' . ltrim($target, '/'),
+        };
+        if (file_exists($linkPath) || is_link($linkPath)) {
+            unlink($linkPath);
+        }
+        symlink($resolved, $linkPath);
+    }
+
+    /**
+     * Parse a comma-separated `key=value` options string into the three
+     * directory-op knobs. Unrecognised keys raise loudly so a typo in a
+     * scenario doesn't silently fall back to defaults.
+     *
+     * @return array{onConflict: ConflictPolicy, symlinks: SymlinkPolicy, bestEffort: bool}
+     */
+    private function parseDirOptions(string $raw): array
+    {
+        $opts = [
+            'onConflict' => ConflictPolicy::Overwrite,
+            'symlinks'   => SymlinkPolicy::Skip,
+            'bestEffort' => false,
+        ];
+        foreach (array_filter(array_map('trim', explode(',', $raw))) as $pair) {
+            [$key, $value] = array_pad(explode('=', $pair, 2), 2, '');
+            switch ($key) {
+                case 'onConflict':
+                    $opts['onConflict'] = match ($value) {
+                        'Overwrite' => ConflictPolicy::Overwrite,
+                        'Skip'      => ConflictPolicy::Skip,
+                        'Fail'      => ConflictPolicy::Fail,
+                        default     => throw new \InvalidArgumentException(
+                            "Unknown onConflict value '{$value}'",
+                        ),
+                    };
+                    break;
+                case 'symlinks':
+                    $opts['symlinks'] = match ($value) {
+                        'Skip'   => SymlinkPolicy::Skip,
+                        'Follow' => SymlinkPolicy::Follow,
+                        default  => throw new \InvalidArgumentException(
+                            "Unknown symlinks value '{$value}'",
+                        ),
+                    };
+                    break;
+                case 'bestEffort':
+                    $opts['bestEffort'] = match ($value) {
+                        'true'  => true,
+                        'false' => false,
+                        default => throw new \InvalidArgumentException(
+                            "bestEffort must be true|false, got '{$value}'",
+                        ),
+                    };
+                    break;
+                default:
+                    throw new \InvalidArgumentException("Unknown option key '{$key}'");
+            }
+        }
+
+        return $opts;
+    }
+
+    /**
+     * @When /^I uploadDirectory "([^"]+)" to "([^"]+)" with policies "([^"]*)"$/
+     */
+    public function iUploadDirectoryWithPolicies(string $localDir, string $remoteDir, string $rawOptions): void
+    {
+        $opts = $this->parseDirOptions($rawOptions);
+        try {
+            $this->lastUploadResult = $this->requireClient()->uploadDirectory(
+                $this->tmpDir . '/' . trim($localDir, '/'),
+                $remoteDir,
+                createRemoteDir: true,
+                progress: null,
+                onConflict: $opts['onConflict'],
+                symlinks: $opts['symlinks'],
+                bestEffort: $opts['bestEffort'],
+            );
+        } catch (\Throwable $e) {
+            $this->lastError = $e;
+        }
+    }
+
+    /**
+     * @When /^I downloadDirectory "([^"]+)" to "([^"]+)" with policies "([^"]*)"$/
+     */
+    public function iDownloadDirectoryWithPolicies(string $remoteDir, string $localDir, string $rawOptions): void
+    {
+        $opts = $this->parseDirOptions($rawOptions);
+        try {
+            $this->lastDownloadResult = $this->requireClient()->downloadDirectory(
+                $remoteDir,
+                $this->tmpDir . '/' . trim($localDir, '/'),
+                progress: null,
+                onConflict: $opts['onConflict'],
+                symlinks: $opts['symlinks'],
+                bestEffort: $opts['bestEffort'],
+            );
+        } catch (\Throwable $e) {
+            $this->lastError = $e;
+        }
+    }
+
+    /**
+     * @Then /^the upload result reports (\d+) skipped entr(?:y|ies)$/
+     */
+    public function uploadResultSkippedCount(int $expected): void
+    {
+        $r = $this->requireUploadResult();
+        Assert::assertCount($expected, $r->skipped, 'skipped[] = ' . implode(', ', $r->skipped));
+    }
+
+    /**
+     * @Then /^the upload result reports (\d+) failures?$/
+     */
+    public function uploadResultFailureCount(int $expected): void
+    {
+        $r = $this->requireUploadResult();
+        $debug = implode(', ', array_map(static fn($f) => $f->path . ' (' . $f->exceptionClass . ')', $r->failures));
+        Assert::assertCount($expected, $r->failures, 'failures[] = ' . $debug);
+    }
+
+    /**
+     * @Then /^the upload result records a cycle skip$/
+     */
+    public function uploadResultRecordsCycle(): void
+    {
+        $r = $this->requireUploadResult();
+        $cycleHits = array_filter($r->skipped, static fn(string $p): bool => str_contains($p, '(cycle)'));
+        Assert::assertNotEmpty(
+            $cycleHits,
+            'expected a "(cycle)" skip marker; skipped[] = ' . implode(', ', $r->skipped),
+        );
+    }
+
+    /**
+     * @Then /^the download result reports (\d+) files and (\d+) bytes transferred$/
+     */
+    public function downloadResultReports(int $files, int $bytes): void
+    {
+        $r = $this->requireDownloadResult();
+        Assert::assertSame($files, $r->filesTransferred, 'filesTransferred mismatch');
+        Assert::assertSame($bytes, $r->bytesTransferred, 'bytesTransferred mismatch');
+    }
+
+    /**
+     * @Then /^the download result reports (\d+) skipped entr(?:y|ies)$/
+     */
+    public function downloadResultSkippedCount(int $expected): void
+    {
+        $r = $this->requireDownloadResult();
+        Assert::assertCount($expected, $r->skipped, 'skipped[] = ' . implode(', ', $r->skipped));
+    }
+
+    /**
+     * @Then /^the download result reports (\d+) failures?$/
+     */
+    public function downloadResultFailureCount(int $expected): void
+    {
+        $r = $this->requireDownloadResult();
+        $debug = implode(', ', array_map(static fn($f) => $f->path . ' (' . $f->exceptionClass . ')', $r->failures));
+        Assert::assertCount($expected, $r->failures, 'failures[] = ' . $debug);
+    }
+
+    private function requireUploadResult(): UploadResult
+    {
+        if ($this->lastUploadResult === null) {
+            throw new \RuntimeException(
+                'No upload result captured. lastError = '
+                . ($this->lastError === null ? '(none)' : $this->lastError::class . ': ' . $this->lastError->getMessage()),
+            );
+        }
+
+        return $this->lastUploadResult;
+    }
+
+    private function requireDownloadResult(): DownloadResult
+    {
+        if ($this->lastDownloadResult === null) {
+            throw new \RuntimeException(
+                'No download result captured. lastError = '
+                . ($this->lastError === null ? '(none)' : $this->lastError::class . ': ' . $this->lastError->getMessage()),
+            );
+        }
+
+        return $this->lastDownloadResult;
+    }
+
+    /**
      * @Then /^the upload result reports (\d+) files and (\d+) bytes transferred$/
      */
     public function uploadResultReports(int $files, int $bytes): void
@@ -887,6 +1118,178 @@ final class SftpContext implements Context
     {
         try {
             $this->requireClient()->makeDirectory($path);
+        } catch (\Throwable $e) {
+            $this->lastError = $e;
+        }
+    }
+
+    /**
+     * @When /^I create directory "([^"]+)" recursively$/
+     */
+    public function iCreateDirectoryRecursive(string $path): void
+    {
+        try {
+            $this->requireClient()->makeDirectory($path, 0o755, true);
+        } catch (\Throwable $e) {
+            $this->lastError = $e;
+        }
+    }
+
+    /**
+     * @When /^I scpUpload "([^"]+)" to "([^"]+)"$/
+     */
+    public function iScpUpload(string $localName, string $remotePath): void
+    {
+        try {
+            $this->requireClient()->scpUpload($this->tmpDir . '/' . $localName, $remotePath);
+        } catch (\Throwable $e) {
+            $this->lastError = $e;
+        }
+    }
+
+    /**
+     * @When /^I scpDownload "([^"]+)" to "([^"]+)"$/
+     */
+    public function iScpDownload(string $remotePath, string $localName): void
+    {
+        try {
+            $this->requireClient()->scpDownload($remotePath, $this->tmpDir . '/' . $localName);
+        } catch (\Throwable $e) {
+            $this->lastError = $e;
+        }
+    }
+
+    /** Cache for the most recent `stat()` / `getFileList()` result. */
+    private mixed $lastQueryResult = null;
+
+    /**
+     * @When /^I stat "([^"]+)"$/
+     */
+    public function iStat(string $remotePath): void
+    {
+        try {
+            $this->lastQueryResult = $this->requireClient()->stat($remotePath);
+        } catch (\Throwable $e) {
+            $this->lastError = $e;
+        }
+    }
+
+    /**
+     * @When /^I getFileList "([^"]+)"$/
+     */
+    public function iGetFileList(string $remotePath): void
+    {
+        try {
+            $this->lastQueryResult = $this->requireClient()->getFileList($remotePath);
+        } catch (\Throwable $e) {
+            $this->lastError = $e;
+        }
+    }
+
+    /**
+     * @When /^I getFileList "([^"]+)" with dot entries$/
+     */
+    public function iGetFileListWithDotEntries(string $remotePath): void
+    {
+        try {
+            $this->lastQueryResult = $this->requireClient()->getFileList(
+                $remotePath,
+                includeDotEntries: true,
+            );
+        } catch (\Throwable $e) {
+            $this->lastError = $e;
+        }
+    }
+
+    /**
+     * @When /^I check fileExists for "([^"]+)"$/
+     */
+    public function iCheckFileExists(string $remotePath): void
+    {
+        try {
+            $this->lastQueryResult = $this->requireClient()->fileExists($remotePath);
+        } catch (\Throwable $e) {
+            $this->lastError = $e;
+        }
+    }
+
+    /**
+     * @Then /^the stat result reports size (\d+)$/
+     */
+    public function statResultReportsSize(int $expected): void
+    {
+        Assert::assertIsArray($this->lastQueryResult);
+        Assert::assertArrayHasKey('size', $this->lastQueryResult);
+        Assert::assertSame($expected, $this->lastQueryResult['size']);
+    }
+
+    /**
+     * @Then /^the file list contains exactly: (.+)$/
+     */
+    public function fileListContainsExactly(string $csv): void
+    {
+        Assert::assertIsArray($this->lastQueryResult);
+        $expected = array_map('trim', explode(',', $csv));
+        $actual = $this->lastQueryResult;
+        sort($expected);
+        sort($actual);
+        Assert::assertSame($expected, $actual);
+    }
+
+    /**
+     * @Then /^fileExists returns (true|false)$/
+     */
+    public function fileExistsReturns(string $expected): void
+    {
+        Assert::assertSame($expected === 'true', $this->lastQueryResult);
+    }
+
+    /**
+     * @When /^I resume upload of "([^"]+)" to "([^"]+)" with explicit offset (\d+)$/
+     */
+    public function iResumeUploadWithOffset(string $localName, string $remotePath, int $offset): void
+    {
+        try {
+            $this->requireClient()->resumeUpload(
+                $this->tmpDir . '/' . $localName,
+                $remotePath,
+                $offset,
+            );
+        } catch (\Throwable $e) {
+            $this->lastError = $e;
+        }
+    }
+
+    /**
+     * @When /^I install a ShellSumRemoteHasher$/
+     */
+    public function installShellSumRemoteHasher(): void
+    {
+        $this->requireClient()->setRemoteHasher(
+            new \IDCT\Networking\Ssh\Checksum\ShellSumRemoteHasher('sha256', 'sha256sum'),
+        );
+    }
+
+    /**
+     * @When /^I connect with multi-factor authentication$/
+     */
+    public function iConnectWithBoth(): void
+    {
+        // atmoz/sftp is configured with both a pubkey AND a password for
+        // the tester user (see tests/functional/fixtures/sftp.d/). Both
+        // legs of AuthMode::Both must succeed for the connect to land.
+        $this->client = new SftpClient();
+        $keysDir = __DIR__ . '/../fixtures/keys';
+        $this->client->setCredentials(
+            Credentials::withBoth(
+                $this->user,
+                $this->pass,
+                $keysDir . '/id_rsa.pub',
+                $keysDir . '/id_rsa',
+            ),
+        );
+        try {
+            $this->client->connect($this->host, $this->port);
         } catch (\Throwable $e) {
             $this->lastError = $e;
         }

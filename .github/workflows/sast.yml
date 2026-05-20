@@ -15,6 +15,12 @@ on:
   push:
     branches: [master, main, "modernize/**"]
   pull_request:
+  # Nightly run picks up taint findings introduced by an upstream
+  # Psalm release (new rules, expanded sink list) even on weeks
+  # nobody pushes. 03:00 UTC ≈ 05:00 Europe/Warsaw (summer) /
+  # 04:00 (winter) — adjust if you want a different local hour.
+  schedule:
+    - cron: "0 3 * * *"
 
 jobs:
   psalm:

@@ -31,3 +31,15 @@ Feature: Atomic uploads and resume semantics
     And the remote file "/data/done.bin" already contains "complete"
     When I resume download of "/data/done.bin" to "done.bin"
     Then the local file "done.bin" contains "complete"
+
+  Scenario: Resume upload with an explicit byte offset honours the caller-supplied value
+    # The README documents that resumeUpload can take an `offset:` argument
+    # to skip auto-detection. The seed partial below holds the first 4
+    # bytes ("AAAA"); the local source has 16. Passing offset=4 explicitly
+    # tells the client to start from byte 4 rather than re-statting the
+    # remote partial — same net result, different decision path.
+    Given I have a local file "explicit.bin" containing "AAAABBBBCCCCDDDD"
+    And a remote partial "/data/.explicit.bin.resume" exists with contents "AAAA"
+    When I resume upload of "explicit.bin" to "/data/explicit.bin" with explicit offset 4
+    Then the remote file "/data/explicit.bin" contains "AAAABBBBCCCCDDDD"
+    And no remote partial file is left behind in "/data"

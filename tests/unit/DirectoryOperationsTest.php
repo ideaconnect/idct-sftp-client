@@ -222,13 +222,87 @@ final class DirectoryOperationsTest extends TestCase
         );
 
         $paths = array_map(static fn(RemoteEntry $e): string => $e->path, $entries);
-        // Real leaf is reachable.
-        self::assertContains('/tree/leaf.txt', $paths);
+        // Real leaf is reachable EXACTLY once. The exact-count assertion
+        // catches a regressed "loops a few times then bails" detector —
+        // a NotContains check on the loop entries would still pass for
+        // those bugs.
+        self::assertSame(
+            ['/tree/leaf.txt'],
+            array_values(array_filter($paths, static fn(string $p): bool => str_ends_with($p, 'leaf.txt'))),
+        );
         // The loop link is not yielded as a Directory entry (the cycle
         // detector skipped it before we descended).
         self::assertNotContains('/tree/loop', $paths);
         // And we definitely didn't recurse into the cycle.
         self::assertNotContains('/tree/loop/leaf.txt', $paths);
+    }
+
+    public function testWalkFollowDetectsIndirectCycleThroughChildLink(): void
+    {
+        // Indirect cycle: /tree contains a regular subdir A; A contains a
+        // symlink "back" pointing at /tree. The cycle detector seeds
+        // visited with /tree's inode at the start of walk(), so when A's
+        // "back" symlink resolves to /tree we trip the visited check.
+        // This case proves the seeding is what catches non-self cycles —
+        // a "skip every symlink target whose inode equals the CURRENT
+        // dir's" implementation would miss this.
+        $this->fixture->writeRemote('/tree/A/inside.txt', 'a');
+        symlink(
+            $this->fixture->rootDir . '/tree',
+            $this->fixture->rootDir . '/tree/A/back',
+        );
+
+        $client = $this->newConnectedClientWithFakeFs();
+        /** @var list<RemoteEntry> $entries */
+        $entries = iterator_to_array(
+            $client->walk('/tree', \IDCT\Networking\Ssh\Directory\SymlinkPolicy::Follow),
+            false,
+        );
+
+        $paths = array_map(static fn(RemoteEntry $e): string => $e->path, $entries);
+        // The real file under A is reached exactly once.
+        self::assertSame(
+            ['/tree/A/inside.txt'],
+            array_values(array_filter($paths, static fn(string $p): bool => str_ends_with($p, 'inside.txt'))),
+        );
+        // The cycle link "back" is not descended into.
+        self::assertEmpty(
+            array_filter($paths, static fn(string $p): bool => str_contains($p, '/back/')),
+            'no entry should be reached THROUGH /tree/A/back — that\'s the cycle',
+        );
+    }
+
+    public function testWalkFollowDetectsCycleNestedDeepInSubtree(): void
+    {
+        // Cycle within a subtree, not pointing at the walk root:
+        //   /tree/A/B/loop -> /tree/A/B
+        // The visited set seeds /tree (the root) but not /tree/A/B; the
+        // self-cycle on /tree/A/B is detected when the second descent
+        // through the symlink finds /tree/A/B's inode already in visited
+        // (the first descent added it). Without cycle detection this
+        // would recurse without bound; the test would time out or PHP's
+        // recursion limit would blow.
+        $this->fixture->writeRemote('/tree/A/B/leaf.txt', 'leaf');
+        symlink(
+            $this->fixture->rootDir . '/tree/A/B',
+            $this->fixture->rootDir . '/tree/A/B/loop',
+        );
+
+        $client = $this->newConnectedClientWithFakeFs();
+        /** @var list<RemoteEntry> $entries */
+        $entries = iterator_to_array(
+            $client->walk('/tree', \IDCT\Networking\Ssh\Directory\SymlinkPolicy::Follow),
+            false,
+        );
+
+        $paths = array_map(static fn(RemoteEntry $e): string => $e->path, $entries);
+        // Real leaf reached.
+        self::assertContains('/tree/A/B/leaf.txt', $paths);
+        // No `/loop/loop` chain — we'd see those entries under unbounded
+        // recursion.
+        self::assertEmpty(
+            array_filter($paths, static fn(string $p): bool => str_contains($p, '/loop/loop')),
+        );
     }
 
     public function testWalkFollowPreservesSymlinkWhenTargetUnstatable(): void

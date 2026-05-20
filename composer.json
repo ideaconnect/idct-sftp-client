@@ -67,7 +67,7 @@
         "cs-fix": "php-cs-fixer fix",
         "stan": "phpstan analyse --memory-limit=512M",
         "test": "phpunit",
-        "behat": "behat",
+        "behat": "behat --tags=~@needs-shell",
         "rector": "rector process --dry-run",
         "infection": "@php -d xdebug.mode=coverage vendor/bin/infection --threads=4 --no-progress --no-interaction",
         "qa": [

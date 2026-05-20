@@ -244,8 +244,10 @@ $client->enableFileSizeVerification();           // post-transfer size check
 ```
 
 > **Verified by Behat:**
-> [`transfer.feature`](tests/functional/features/transfer.feature),
-> [`filesystem.feature`](tests/functional/features/filesystem.feature),
+> [`transfer.feature`](tests/functional/features/transfer.feature) (SFTP round-trip),
+> [`ops.feature`](tests/functional/features/ops.feature) (`stat`, `fileExists`, `getFileList` ± dot entries, recursive `makeDirectory`, `rename`),
+> [`filesystem.feature`](tests/functional/features/filesystem.feature) (mkdir / remove / rename error paths),
+> [`needs-shell.feature`](tests/functional/features/needs-shell.feature) (`scpUpload` / `scpDownload` — runs against the OpenSSH fixture only),
 > [`readme.feature → enableFileSizeVerification accepts a clean upload`](tests/functional/features/readme.feature).
 
 ## Atomic uploads & resume
@@ -286,7 +288,7 @@ Behaviour:
 
 > **Verified by Behat:**
 > [`atomic-and-resume.feature`](tests/functional/features/atomic-and-resume.feature)
-> (atomic round-trip, resume from server-side partial, resume download into a partial local, noop when already complete),
+> (atomic round-trip, resume from server-side partial, resume download into a partial local, noop when already complete, **resume upload with explicit `offset:` arg**),
 > [`readme.feature → disableAtomicUploads writes the destination directly (no partial)`](tests/functional/features/readme.feature).
 > **Unit tests:** [`AtomicUploadAndResumeTest`](tests/unit/AtomicUploadAndResumeTest.php).
 > **Runnable:** [`examples/03-resume-upload.php`](examples/03-resume-upload.php).
@@ -513,7 +515,10 @@ $client->setRemoteHasher(new RedownloadRemoteHasher('sha256'));
 $client->upload('/local/critical.bin', '/remote/critical.bin');
 ```
 
-> **Verified by Behat:** [`readme.feature → RedownloadRemoteHasher passes on a clean round-trip`](tests/functional/features/readme.feature).
+> **Verified by Behat:**
+> [`readme.feature → RedownloadRemoteHasher passes on a clean round-trip`](tests/functional/features/readme.feature),
+> [`needs-shell.feature → ShellSumRemoteHasher verifies a clean round-trip using sha256sum`](tests/functional/features/needs-shell.feature)
+> (runs against the OpenSSH fixture only — see Operations note).
 > **Unit tests:** [`Checksum/RemoteHasherTest`](tests/unit/Checksum/RemoteHasherTest.php).
 
 ## Prefixes
@@ -600,10 +605,17 @@ dockerised SFTP fixture used by the Behat suite — see
 [`examples/README.md`](examples/README.md) for the one-line bring-up
 command.
 
-> **Verified by Behat:** Every README code sample also has a matching
-> scenario in [`tests/functional/features/readme.feature`](tests/functional/features/readme.feature)
-> (13 scenarios at last count). The "Verified by Behat" callouts under
-> each section above point at the specific scenario backing the example.
+> **Verified by Behat:** The "Verified by Behat" callouts under each
+> section point at the specific scenario(s) backing the example. The
+> README-mirroring scenarios live in
+> [`readme.feature`](tests/functional/features/readme.feature); per-area
+> behaviour matrices live alongside (`ops.feature`,
+> `directory-policies.feature`, etc.). One small subset —
+> [`needs-shell.feature`](tests/functional/features/needs-shell.feature)
+> covering `scpUpload` / `scpDownload` / `ShellSumRemoteHasher` — runs
+> only against the OpenSSH fixture (port 2223): the default atmoz/sftp
+> fixture is chrooted to `internal-sftp`, so it can't exec `scp` or
+> `sha256sum`. CI runs both backends.
 
 | # | Script | What it shows |
 |---|---|---|
