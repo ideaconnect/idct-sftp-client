@@ -63,11 +63,15 @@ jobs:
       - name: PHPUnit
         env:
           XDEBUG_MODE: coverage
-        # mkdir guarantees PHPUnit's clover writer has a parent dir to
-        # write into — some PHPUnit/xdebug combos don't auto-create it.
+        # Absolute --coverage-clover path is intentional. The test
+        # bootstrap (tests/bootstrap.php) chdirs into scratch/ to shield
+        # the repo root from stray writes by Infection mutants, so a
+        # relative coverage path here would resolve against scratch/
+        # and land at scratch/build/coverage/clover.xml — invisible to
+        # the gate and Codecov steps that look at the repo-root path.
         run: |
           mkdir -p build/coverage
-          vendor/bin/phpunit --coverage-clover=build/coverage/clover.xml
+          vendor/bin/phpunit --coverage-clover="${GITHUB_WORKSPACE}/build/coverage/clover.xml"
           if [ "${{ matrix.php }}" = "8.2" ] && [ ! -s build/coverage/clover.xml ]; then
             echo "::error::PHPUnit completed but did not produce build/coverage/clover.xml (driver missing, or writer failed)."
             exit 1
