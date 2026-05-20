@@ -82,8 +82,12 @@ services:
       - "127.0.0.1:8474:8474"   # admin / control API
       - "127.0.0.1:22122:22122" # injected SFTP proxy → atmoz
     command: ["-host=0.0.0.0", "-config=/tmp/empty.json"]
+    # The toxiproxy image is built FROM scratch — no shell, no wget, no
+    # curl. The bundled /toxiproxy-cli binary talks to the admin API on
+    # localhost:8474 and exits 0 when the daemon is reachable, which is
+    # exactly the readiness signal we need.
     healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:8474/version"]
+      test: ["CMD", "/toxiproxy-cli", "list"]
       interval: 2s
       timeout: 2s
       retries: 30

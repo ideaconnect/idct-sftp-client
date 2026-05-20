@@ -162,7 +162,17 @@ jobs:
             ssh-keygen -t rsa -b 2048 -N "" -f tests/functional/fixtures/keys/id_rsa -C "idct-sftp-ci"
           fi
       - name: Start SFTP + minio fixtures
-        run: docker compose -f tests/functional/docker-compose.yml up -d --wait
+        # `--wait` polls for "running|healthy", so a one-shot like
+        # minio-init (exits 0 right after seeding the bucket) makes the
+        # whole `up` command fail on docker compose versions that don't
+        # auto-ignore successful exits. Bring up the long-running
+        # services first and `--wait` for them; then start minio-init
+        # and block on its successful completion via `docker compose
+        # wait`, which returns the container's exit code.
+        run: |
+          docker compose -f tests/functional/docker-compose.yml up -d --wait sftp openssh minio toxiproxy
+          docker compose -f tests/functional/docker-compose.yml up -d minio-init
+          docker compose -f tests/functional/docker-compose.yml wait minio-init
       - name: Behat (${{ matrix.server.name }})
         env:
           SFTP_PORT: ${{ matrix.server.port }}
