@@ -28,6 +28,7 @@ final class TcpProbeTest extends TestCase
         // immediately close a connection to it.
         $server = stream_socket_server('tcp://127.0.0.1:0', $errno, $errstr);
         self::assertNotFalse($server, "could not bind test server: {$errstr} ({$errno})");
+
         try {
             $addr = stream_socket_get_name($server, false);
             self::assertIsString($addr);

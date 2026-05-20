@@ -437,6 +437,7 @@ final class StreamingAndProgressTest extends TestCase
         $client = $this->newConnectedClient();
         $sink = fopen('php://memory', 'r+b');
         self::assertNotFalse($sink);
+
         try {
             $this->expectException(\IDCT\Networking\Ssh\Exception\InvalidPathException::class);
             // Traversal path — PathValidator must reject before we hit any

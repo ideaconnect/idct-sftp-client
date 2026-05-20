@@ -15,8 +15,8 @@ use IDCT\Networking\Ssh\Checksum\RedownloadRemoteHasher;
 use IDCT\Networking\Ssh\Directory\ConflictPolicy;
 use IDCT\Networking\Ssh\Directory\DownloadResult;
 use IDCT\Networking\Ssh\Directory\EntryType;
-use IDCT\Networking\Ssh\Directory\SymlinkPolicy;
 use IDCT\Networking\Ssh\Directory\RemoteEntry;
+use IDCT\Networking\Ssh\Directory\SymlinkPolicy;
 use IDCT\Networking\Ssh\Directory\UploadResult;
 use IDCT\Networking\Ssh\Exception\AuthenticationException;
 use IDCT\Networking\Ssh\Exception\ConnectionException;
@@ -765,6 +765,7 @@ final class SftpContext implements Context
     public function iUploadDirectoryWithPolicies(string $localDir, string $remoteDir, string $rawOptions): void
     {
         $opts = $this->parseDirOptions($rawOptions);
+
         try {
             $this->lastUploadResult = $this->requireClient()->uploadDirectory(
                 $this->tmpDir . '/' . trim($localDir, '/'),
@@ -786,6 +787,7 @@ final class SftpContext implements Context
     public function iDownloadDirectoryWithPolicies(string $remoteDir, string $localDir, string $rawOptions): void
     {
         $opts = $this->parseDirOptions($rawOptions);
+
         try {
             $this->lastDownloadResult = $this->requireClient()->downloadDirectory(
                 $remoteDir,
@@ -1288,6 +1290,7 @@ final class SftpContext implements Context
                 $keysDir . '/id_rsa',
             ),
         );
+
         try {
             $this->client->connect($this->host, $this->port);
         } catch (\Throwable $e) {
@@ -1544,6 +1547,7 @@ final class SftpContext implements Context
     public function clientHasRemotePrefix(string $prefix): void
     {
         $this->requireClient()->setRemotePrefix($prefix);
+
         // Make sure the prefix path exists so upload() (which doesn't
         // mkdir intermediate dirs) doesn't fail with "no such directory".
         try {

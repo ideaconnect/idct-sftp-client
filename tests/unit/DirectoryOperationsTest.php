@@ -812,6 +812,7 @@ final class DirectoryOperationsTest extends TestCase
         $client = new SftpClient(false, $this->ssh2, new NoRetryPolicy());
         $localDir = sys_get_temp_dir() . '/sftp-test-' . bin2hex(random_bytes(4));
         mkdir($localDir);
+
         try {
             $this->expectException(\IDCT\Networking\Ssh\Exception\ConnectionException::class);
             $client->uploadDirectory($localDir, '/tree');
@@ -825,6 +826,7 @@ final class DirectoryOperationsTest extends TestCase
         $client = new SftpClient(false, $this->ssh2, new NoRetryPolicy());
         $localDir = sys_get_temp_dir() . '/sftp-test-' . bin2hex(random_bytes(4));
         $this->expectException(\IDCT\Networking\Ssh\Exception\ConnectionException::class);
+
         try {
             $client->downloadDirectory('/tree', $localDir);
         } finally {
