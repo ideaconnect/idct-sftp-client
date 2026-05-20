@@ -9,6 +9,9 @@ operations, streaming sources/sinks, progress callbacks, retry policies,
 known-hosts verification, and opt-in checksum verification — see the
 [feature index](#features) below.
 
+[![codecov](https://codecov.io/gh/ideaconnect/idct-sftp-client/graph/badge.svg?token=BMoR41kXtF)](https://codecov.io/gh/ideaconnect/idct-sftp-client)
+[![CI](https://github.com/ideaconnect/idct-sftp-client/actions/workflows/ci.yml/badge.svg)](https://github.com/ideaconnect/idct-sftp-client/actions/workflows/ci.yml)
+
 ## Sponsorship ❤️
 
 This project is maintained on the side and looking for sponsors to keep the
