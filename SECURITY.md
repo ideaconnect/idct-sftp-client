@@ -8,8 +8,7 @@ for **six months**.
 
 | Version | Status       | Security fixes until                |
 |---------|--------------|-------------------------------------|
-| 1.1.x   | Active       | until 1.2.0 ships, then +6 months   |
-| 1.0.x   | Maintenance  | 2026-11-17 (six months past 1.1.0)  |
+| 1.0.x   | Active       | until 1.1.0 ships, then +6 months   |
 | < 1.0   | End of life  | not supported                       |
 
 Patch releases (1.x.y) carry no breaking changes; upgrading from 1.x.y to
@@ -78,44 +77,157 @@ triage than miss a real issue.
 
 ## Hardening already in place
 
+### Transport & handshake
+
 - All ext-ssh2 calls are funnelled through one adapter
   (`src/Ssh2/Ssh2Functions.php`) that converts low-level warnings into
-  typed exceptions.
-- Every remote path is run through `PathValidator` before any SFTP call.
-  Rejected inputs: null bytes (`\0`), CR/LF and other C0/C1 control
-  characters, `.` / `..` components, paths over 4096 bytes by default.
-  Absolute paths bypass the configured remote prefix (rather than
-  concatenating into a nonsensical `/uploads//abs/dest`), and the
-  joined result is re-validated so attackers can't smuggle traversal
-  through the prefix.
-- Atomic uploads are on by default (write to `.partial-{uuid}` →
-  `sftp_rename` → unlink on failure), so a crashed upload doesn't leave
-  callers reading a half-written file at the destination path.
-- Connect supports server fingerprint pinning
-  (`expectedFingerprint`) and OpenSSH-format `known_hosts` verification
-  with strict-by-default unknown-host policy
-  (`UnknownHostPolicy::Reject`). `TrustOnFirstUse` is opt-in and
-  appends a custom `sha1-fpr` keytype entry — see the design note
-  below.
+  typed exceptions. This is the only `@`-suppressed boundary in the
+  library — every call site above the adapter sees a real exception,
+  never a silenced warning.
+- When the caller supplies `timeoutSeconds`, `connect()` runs a
+  TCP-level probe (`stream_socket_client()`) *before* initiating the
+  SSH handshake. A dead or firewalled peer is rejected quickly with a
+  `ConnectionException` instead of blocking the worker for the full
+  libssh2 default timeout (which can be minutes). The probe is
+  skipped when `timeoutSeconds` is unset, so legacy callers see no
+  behavioural change.
+- Server identity verification happens via either an explicit pinned
+  fingerprint (`expectedFingerprint` parameter — algorithm/encoding
+  chosen by the caller) or an OpenSSH-format `known_hosts` file. With
+  neither configured the connection still completes, but it then
+  relies on the network/DNS path being trustworthy. **In production,
+  always set one or the other** — see the recommendations below.
+- `UnknownHostPolicy::Reject` is the default for unknown hosts when
+  `knownHostsFile` is set; `TrustOnFirstUse` is opt-in and appends a
+  custom `sha1-fpr` keytype entry (see the design note below). A
+  freshly created `known_hosts` file is `chmod 0600` so the
+  fingerprint store isn't world-readable.
 - `SecurityProfile` enum (`Modern` / `Compatible` / `Legacy`) restricts
   cipher / MAC / KEX / host-key algorithms at connect time. Default
-  is `Compatible` (libssh2 defaults); `Modern` locks to ChaCha20+Poly1305,
-  curve25519, Ed25519, and SHA-256 ETM MACs; `Legacy` is permissive and
-  emits a `notice`-level log line on every use.
+  when unset is libssh2's own algorithm list; `Modern` locks to
+  ChaCha20+Poly1305, curve25519, Ed25519, and SHA-256 ETM MACs;
+  `Legacy` is permissive (3DES + diffie-hellman-group1 still allowed
+  for ancient appliances) and emits a `notice`-level log line on every
+  use so the choice is auditable.
+
+### Credentials & authentication
+
+- Passwords and key passphrases are marked `#[\SensitiveParameter]`
+  everywhere they're passed; `Credentials::__debugInfo()` redacts the
+  stored values from `var_dump` / `print_r` / error-log output.
+- `CredentialsLoaderInterface` (via `setCredentialsLoader()`) re-resolves
+  credentials on every `connect()`, so short-lived tokens from secret
+  managers can rotate without the client holding a stale value. Mutually
+  exclusive with `setCredentials()`; the loader wins.
 - `AuthFailureRateLimiter` (opt-in via `setAuthFailureRateLimiter()`)
   applies in-process per-host exponential backoff after consecutive
   auth failures. Complements server-side fail2ban / sshguard for
   callers that catch the auth exception and re-invoke `connect()` in
   their own loop. Threshold defaults: 3 failures → 1 s base → 60 s cap.
-- Passwords and key passphrases are `#[\SensitiveParameter]` everywhere
-  they're passed; `Credentials::__debugInfo()` redacts them from
-  `var_dump`/`print_r` output.
 - A lint test (`tests/unit/LoggerRedactionLintTest.php`) statically
   scans `src/` and fails the build if the literal tokens `password` or
   `passphrase` appear in any statement that also contains a log call.
+
+### Paths & filesystem
+
+- Every remote path is run through `PathValidator` before any SFTP
+  call. Rejected inputs: null bytes (`\0`), CR/LF and other C0/C1
+  control characters, `.` / `..` components, paths over 4096 bytes by
+  default. Absolute paths bypass the configured remote prefix (rather
+  than concatenating into a nonsensical `/uploads//abs/dest`), and the
+  joined result is re-validated so attackers can't smuggle traversal
+  through the prefix.
+- `ShellSumRemoteHasher` (the shell-side checksum helper) additionally
+  runs the remote path through `escapeshellarg()` before invoking
+  `sha256sum`. PathValidator already rejects the bytes that would
+  break shell quoting; the escape is a second line of defence so that
+  *any* future weakening of PathValidator can't promote a path into a
+  shell injection.
+- Atomic uploads are on by default (write to `.partial-{uuid}` →
+  `sftp_rename` → unlink on failure), so a crashed upload doesn't
+  leave callers reading a half-written file at the destination path.
+- `makeDirectory()` creates remote directories with mode `0o755`
+  (historically `0o777`) — readable by group/world, writable only by
+  owner. Callers needing tighter modes pass an explicit `$mode`.
+- `getFileList()` filters `.` and `..` from its output by default;
+  callers that *want* the dot-entries pass `includeDotEntries: true`.
+  Closes a small B9-class footgun where iterating `getFileList()` and
+  recursing would self-loop.
+
+### Supply chain & build
+
 - CI runs `composer audit --no-dev --locked` on every push; the build
   fails on any advisory affecting our pinned dependencies. A separate
   SAST job runs Psalm.
+- Release tags must be GPG-signed — `.github/workflows/release.yml`
+  rejects an unsigned tag and refuses to publish. The signing key
+  lives on the maintainer's machine, never in the repo or CI secrets.
+
+## Defaults that fail closed
+
+If you don't override anything, `connect()` already picks the
+conservative side of every choice:
+
+| Setting                       | Default                                | Why                                                       |
+|-------------------------------|----------------------------------------|-----------------------------------------------------------|
+| `fingerprintAlgorithm`        | `Sha256`                               | SHA-1 / MD5 are accepted for legacy peers but not chosen  |
+| `fingerprintEncoding`         | `Hex` (lowercase, no separators)       | Easy to compare against `ssh-keyscan` output              |
+| `onUnknownHost` (with `knownHostsFile`) | `Reject`                     | Unknown host = refuse, not "trust silently"               |
+| Atomic upload                 | on                                     | No half-written destinations on crash                     |
+| `makeDirectory()` mode        | `0o755`                                | Writable only by owner                                    |
+| `getFileList()` dot entries   | filtered out                           | Recursive walks don't self-loop                           |
+| `SecurityProfile`             | unset (libssh2 default algorithm list) | Set `Modern` for greenfield deployments                   |
+| `bestEffort` on directory ops | `false`                                | Errors surface immediately rather than being collected    |
+
+## Recommendations for production callers
+
+These are not enforced by the library — they're the configuration
+choices that close the remaining gap between "compiles" and "deploys
+safely."
+
+- **Pin server identity.** Either set `expectedFingerprint` (with the
+  algorithm/encoding you control) or point `knownHostsFile` at a file
+  whose contents you trust. Without one of the two, the connection
+  trusts whatever the network/DNS path delivers — which is fine for
+  CI fixtures and unsafe for production.
+- **Set `timeoutSeconds`.** Default libssh2 timeouts are minutes; in a
+  worker pool that's a denial-of-service vector. 10 – 30 s is
+  reasonable for most workloads.
+- **Set `SecurityProfile::Modern`** for greenfield deployments. The
+  default leaves algorithm negotiation to libssh2; `Modern` removes
+  the legacy ciphers from the menu entirely.
+- **Use `setAuthFailureRateLimiter()`** in long-running daemons that
+  retry `connect()` on failure. Without it, a wrong-credential loop
+  hammers the server until fail2ban catches it.
+- **Use `setCredentialsLoader()`** rather than `setCredentials()` if
+  you're rotating short-lived tokens or fetching from a secret store.
+- **Enable checksum verification** (`setRemoteHasher()` with
+  `RedownloadRemoteHasher` or `ShellSumRemoteHasher`) for transfers
+  where silent corruption matters. ext-ssh2 only verifies file size,
+  not bytes.
+
+## What we explicitly don't do (by design)
+
+Listed here so a "missing feature" report can be triaged as "out of
+scope" rather than as a vulnerability:
+
+- **No credential persistence.** Credentials live in memory for the
+  lifetime of the `SftpClient` instance and are never written to disk
+  by the library. If your application caches them, that's your
+  application's concern.
+- **No automatic key generation.** The library doesn't generate SSH
+  keypairs; callers point `Credentials::withPublicKey()` at existing
+  files.
+- **No per-host secret encryption at rest.** `Credentials` holds
+  passwords as plain strings (`#[\SensitiveParameter]` controls
+  serialization, not storage). Use OS-level secret management or
+  a secret store + `CredentialsLoaderInterface`.
+- **No transport-layer encryption choices below libssh2.** The
+  `SecurityProfile` enum maps to libssh2's `methods` parameter; we
+  don't implement our own cipher selection.
+- **No SFTP-server-side validation.** The library is a client only —
+  it doesn't verify that the server you connect to is configured
+  safely. Use `expectedFingerprint` to detect drift.
 
 ## Design notes (not vulnerabilities)
 

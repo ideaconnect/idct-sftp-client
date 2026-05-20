@@ -1,10 +1,21 @@
 # Changelog
 
-## Unreleased (1.1.0 in progress)
+## 1.0.0 — 2026-05-20
 
-The 1.1 line was developed as a sequence of production-grade phases
-(`P1`–`P11`). Each entry below lists the phase identifier and what
-shipped under it.
+The 1.0 release bundles two passes of work into a single first-stable
+cut:
+
+* The **original modernization pass** (PHP 8.2+ floor, typed exception
+  hierarchy, ext-ssh2 ≥ 1.4 wrapper, 100% line coverage, CI matrix) —
+  bug-fix list `B1`–`B12` and security baseline `S1`–`S5`.
+* The **production-grade phases** `P1`–`P11` — atomic uploads, resume,
+  recursive directory operations, streaming sources/sinks, progress
+  callbacks, retry policies, PSR-3 logging, known-hosts verification,
+  security profiles, an opt-in checksum verification seam, and
+  hardening + tooling round-outs.
+
+The production-grade work is listed first below (newest), followed by
+the [original modernization pass](#original-modernization-pass-2026-05-17).
 
 ### Follow-up pass — resolve every partially-done phase (2026-05-19)
 
@@ -38,7 +49,7 @@ P8 follow-ups:
 P3 follow-ups:
 * New `Directory\ConflictPolicy` enum (Overwrite / Skip / Fail) wired
   into `uploadDirectory()` + `downloadDirectory()` via new
-  `onConflict` parameters. Default stays Overwrite (existing 1.1
+  `onConflict` parameters. Default stays Overwrite (existing pre-policy
   behaviour). Skip records the source path in the result's `skipped`
   list; Fail raises `RemoteFilesystemException` (upload) /
   `ConfigurationException` (download).
@@ -514,17 +525,18 @@ P10 follow-ups:
   you mix relative and absolute remote names. Relative paths are
   unaffected.
 
-## 1.0.0 — 2026-05-17
+### Original modernization pass (2026-05-17)
 
-Major modernization release. PHP 8.2+ floor, full type coverage, typed
-exception hierarchy, 100% unit-test line coverage, Behat integration tests
-against a dockerised SFTP fixture, GitHub Actions CI on PHP 8.2/8.3/8.4.
+The modernization milestone (closed internally on 2026-05-17, rolled
+into 1.0.0). PHP 8.2+ floor, full type coverage, typed exception
+hierarchy, 100% unit-test line coverage, Behat integration tests against
+a dockerised SFTP fixture, GitHub Actions CI on PHP 8.2/8.3/8.4.
 
 The bug-fix matrix (`B1`–`B12`) and security baseline (`S1`–`S5`)
 referenced throughout the entries below are the original modernization
 identifiers tracked under MYID-4 in Asana.
 
-### Breaking changes
+#### Breaking changes
 * PHP `>=8.2` required (was 5.4).
 * `ext-ssh2 >=1.4` required (was 0.12).
 * `AuthMode` is now a backed `enum`: `AuthMode::Password`, `AuthMode::PublicKey`,
@@ -541,7 +553,7 @@ identifiers tracked under MYID-4 in Asana.
 * `getFileList()` now filters `.` and `..` by default. Pass
   `includeDotEntries: true` for the old behaviour.
 
-### Bug fixes
+#### Bug fixes
 * **B1** `download()` "different file size" message no longer references an
   undefined `$localFilePath` variable.
 * **B2** `Credentials::authorizeSshConnection()` handles every `AuthMode` (no
@@ -565,7 +577,7 @@ identifiers tracked under MYID-4 in Asana.
 * **B12** `Credentials` validation messages now name the actual mode the user
   selected, not always "BOTH mode".
 
-### Security hardening
+#### Security hardening
 * **S1** `connect()` accepts `expectedFingerprint` + algorithm/encoding enums;
   a mismatch immediately disconnects before authentication.
 * **S2** Adapter `Ssh2Functions` is the single `@`-suppressed boundary; the
@@ -577,7 +589,7 @@ identifiers tracked under MYID-4 in Asana.
 * **S5** `connect()` accepts `timeoutSeconds` and probes via
   `stream_socket_client()` before initiating the SSH handshake.
 
-### Tooling
+#### Tooling
 * PHPStan level `max` (level 10) on `src/` with strict rules.
 * PHPUnit 11 / 12 with 100% line coverage gate (`tests/bin/check-coverage.php`).
 * Behat 3 functional suite against `atmoz/sftp` docker fixture.

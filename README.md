@@ -4,10 +4,10 @@ Typed PHP 8.2+ wrapper around `ext-ssh2` that simplifies file upload / download
 over SSH / SCP / SFTP. Built for predictable error handling, fingerprint
 verification, and a clean unit-testable seam over the procedural `ssh2_*` API.
 
-The 1.1 line adds atomic uploads, resume, recursive directory operations,
-streaming sources/sinks, progress callbacks, retry policies, known-hosts
-verification, and opt-in checksum verification — see the [feature index](#features)
-below.
+The 1.0 release adds atomic uploads, resume, recursive directory
+operations, streaming sources/sinks, progress callbacks, retry policies,
+known-hosts verification, and opt-in checksum verification — see the
+[feature index](#features) below.
 
 ## Sponsorship ❤️
 
@@ -75,7 +75,7 @@ pecl install ssh2
 ## Installation
 
 ```bash
-composer require idct/sftp-client:^1.1
+composer require idct/sftp-client:^1.0
 ```
 
 ## Quick start
@@ -641,16 +641,17 @@ command.
 | `close()` ran `ssh2_exec($conn, 'logout')` (broken) | uses `ssh2_disconnect()`               |
 | Upload landed bytes directly at the destination | atomic `.partial-{uuid}` + rename by default |
 
-Class moves (1.1): everything under `IDCT\Networking\Ssh\…` is now grouped
+Class moves: everything under `IDCT\Networking\Ssh\…` is now grouped
 by domain (`Auth\`, `HostKey\`, `Retry\`, `Path\`, `Progress\`, `Ssh2\`,
 `Directory\`, `KnownHosts\`, `Checksum\`, `Security\`). The
 [`CHANGELOG.md`](CHANGELOG.md) "P1 (revised)" section has the full
 old→new FQN table.
 
-See [`CHANGELOG.md`](CHANGELOG.md) for the per-version history — 1.0
-covers the bug-fix list (`B1`–`B12`) and security baseline (`S1`–`S5`)
-from the original modernization pass; 1.1 covers the production-grade
-feature work (`P1`–`P11`).
+See [`CHANGELOG.md`](CHANGELOG.md) for the per-version history. 1.0
+bundles the original modernization pass (bug-fix list `B1`–`B12`,
+security baseline `S1`–`S5`) with the production-grade feature work
+(`P1`–`P11`) — atomic transfers, resume, recursive directory ops,
+streaming, progress, retry, known-hosts, and opt-in checksums.
 
 ## Development
 

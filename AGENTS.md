@@ -7,11 +7,11 @@ Onboarding notes for AI agents (and humans) picking up work on this repo.
 **Active backlog: Asana, under `MYID-4` ("Release idct-sftp-client v1.0")**
 GID `1214894683655126` — [open in Asana](https://app.asana.com/1/1214897106264347/project/1214894683655121/task/1214894683655126).
 
-The 1.1 line was developed as a sequence of phases (P1–P12) each tracked
-as a subtask under MYID-4. By the time you're reading this every P1–P11
-phase is shipped (see [CHANGELOG.md](CHANGELOG.md) for what landed when);
-P12 (richer docs / cookbook / API reference on GitHub Pages) remains the
-only open phase.
+The 1.0 release was developed as a sequence of phases (P1–P12) each
+tracked as a subtask under MYID-4. By the time you're reading this every
+P1–P11 phase is shipped (see [CHANGELOG.md](CHANGELOG.md) for what
+landed when); P12 (richer docs / cookbook / API reference on GitHub
+Pages) remains the only open phase.
 
 If you have the Asana MCP wired up, prefer fetching the subtask list via
 `search_tasks` / `get_task task_id=1214894683655126` over guessing — the
