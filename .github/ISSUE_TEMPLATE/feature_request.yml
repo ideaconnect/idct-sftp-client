@@ -1,0 +1,56 @@
+name: Feature request
+description: Propose a new capability or extension to an existing one.
+labels: [enhancement, triage]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the suggestion. To help us evaluate the request,
+        please describe the **use case** before the proposed API —
+        the use case is what we need to decide whether the feature
+        belongs in core, in a separate adapter package, or in your
+        own consumer code.
+
+        Before filing, please check:
+        - [AGENTS.md "Explicit non-goals"](https://github.com/ideaconnect/idct-sftp-client/blob/master/AGENTS.md#explicit-non-goals-dont-propose-without-reopening-the-discussion) — async, framework adapters, OpenTelemetry, connection pooling, FTP, GUI tools, pure-PHP backend, code of conduct.
+        - The open issues + discussions for similar asks.
+
+  - type: textarea
+    id: use-case
+    attributes:
+      label: Use case
+      description: |
+        What are you trying to do? What does the consumer-side code look
+        like today (without this feature) and what's painful about it?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposed-api
+    attributes:
+      label: Proposed API
+      description: |
+        Rough sketch — method signature, new class, new option. Don't
+        worry about exact naming.
+      render: php
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: |
+        Have you tried solving this with existing public API? With a
+        helper in your own code? Why didn't that work?
+
+  - type: dropdown
+    id: willing-to-pr
+    attributes:
+      label: Would you be willing to send a PR?
+      options:
+        - "Yes, with guidance"
+        - "Yes, independently"
+        - "No, just proposing"
+    validations:
+      required: true

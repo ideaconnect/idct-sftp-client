@@ -1,0 +1,61 @@
+{
+    "$schema": "vendor/infection/infection/resources/schema.json",
+    "source": {
+        "directories": ["src"],
+        "excludes": [
+            // Behat-only — every unit-suite mutant survives because the
+            // adapter has no unit-test caller. The Behat suite is the
+            // real safety net for this file.
+            "Ssh2/Ssh2Functions.php"
+        ]
+    },
+    "timeout": 30,
+    "logs": {
+        "text": "build/infection/infection.log",
+        "html": "build/infection/infection.html",
+        "summary": "build/infection/summary.log"
+    },
+    "tmpDir": "var/infection",
+    // Gate calibrated 2pp under the realistic MSI ceiling. The
+    // ignore list below filters out the equivalent-mutant categories
+    // that dominate every PHP project and that no amount of test
+    // tightening can kill without resorting to brittle assertions
+    // (exact exception phrasings, exact log records, etc.). After
+    // those filters the baseline sits at ~92% MSI / ~93% Covered
+    // MSI; gates at 90/91 leave working room for ordinary suite
+    // fluctuation while still catching genuine regressions.
+    "minMsi": 90,
+    "minCoveredMsi": 91,
+    "mutators": {
+        // `@default` keeps the standard mutator set (without this, listing
+        // ONLY the global-ignore filter below disables all mutators —
+        // MutatorResolver only registers mutators it sees enabled).
+        "@default": true,
+        // Skip mutations on:
+        //  1. log emission lines — observability, not behaviour;
+        //     `LoggerRedactionLintTest` covers the only invariant that
+        //     matters (no secrets in log records).
+        //  2. throw new <Type>Exception(...) lines — message-fragment
+        //     permutations don't change semantics. Killing them would
+        //     require expectExceptionMessage assertions that brittle-
+        //     lock the EXACT phrasing in every test.
+        //  3. defensive `(string)` casts on `?string` getters where the
+        //     source is guaranteed non-null by construction (e.g.
+        //     `Credentials::withPassword` enforces password presence;
+        //     the cast is for the type system, not the runtime).
+        //  4. `instanceof` checks on inheriting exception types — the
+        //     subclass would match the parent's `instanceof` next time
+        //     around, so the OUTCOME is unchanged (e.g.
+        //     `InvalidPathException extends ConfigurationException` in
+        //     `RetryClassifier::isRetryable`).
+        "global-ignoreSourceCodeByRegex": [
+            ".*\\$this->log\\(.*",
+            ".*\\$this->logger\\?->log\\(.*",
+            ".*throw new \\w+Exception\\(.*",
+            ".*\\(string\\) \\$credentials->get(Password|PublicKey|PrivateKey|Passphrase)\\(\\).*",
+            ".*if \\(\\$e instanceof (InvalidPathException|ConfigurationException|AuthenticationException)\\) \\{.*"
+        ]
+    },
+    "testFramework": "phpunit",
+    "testFrameworkOptions": "--testsuite=unit"
+}

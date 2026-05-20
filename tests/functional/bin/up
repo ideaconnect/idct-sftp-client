@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Bring up the dockerised SFTP fixture(s) and generate a pubkey if missing.
+# Default brings up both services (atmoz/sftp on 2222, OpenSSH on 2223);
+# pass a service name as $1 to limit (e.g. `up sftp` or `up openssh`).
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+if [[ ! -f fixtures/keys/id_rsa ]]; then
+  echo "Generating fixture SSH keypair..."
+  ssh-keygen -t rsa -b 2048 -N "" -f fixtures/keys/id_rsa -C "idct-sftp-fixture" >/dev/null
+fi
+
+docker compose up -d --wait "$@"
+if [[ $# -eq 0 ]]; then
+  echo "SFTP fixtures up: atmoz on 127.0.0.1:2222, openssh on 127.0.0.1:2223 (user=tester pass=testerpass)."
+else
+  echo "Started: $* (user=tester pass=testerpass)."
+fi

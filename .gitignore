@@ -1,1 +1,41 @@
 vendor/
+composer.lock
+var/
+build/
+.phpunit.cache
+.phpunit.result.cache
+.php-cs-fixer.cache
+.phpstan.result.cache
+infection.log
+
+# Local agent state (Claude Code & friends — per-developer, not shared).
+.claude/
+
+# Psalm — pulled in by .github/workflows/sast.yml as a standalone phar
+# (Psalm 5.x's nikic/php-parser ^4 pin conflicts with PHPUnit 11's ^5).
+# The phar must NOT be committed; psalm.xml.dist + psalm-baseline.xml
+# are the only Psalm artefacts that go into git.
+psalm.phar
+psalm-baseline.xml
+/psalm.xml
+.psalm/
+
+# Per-environment ephemeral SSH keypair used by the Behat fixture +
+# soak script. Regenerated on first `tests/functional/bin/up` run; if
+# this was ever committed, every consumer would share a private key.
+tests/functional/fixtures/keys/id_rsa
+tests/functional/fixtures/keys/id_rsa.pub
+tests/functional/fixtures/keys/known_hosts*
+
+# Cached fixture for the 500 MB big-file soak (see Asana 1214890926790595).
+# SHA-256-pinned; downloaded on first run, ignored thereafter.
+tests/functional/.cache/
+
+# Scratch markdown extracted from CHANGELOG by .github/workflows/release.yml
+# at tag-push time. Lives in the workflow runner only; never local.
+release-notes.md
+
+# Sandbox for ad-hoc manual test artifacts (a.txt, big.bin, that sort of
+# thing). Drop scratch files under scratch/ instead of the repo root so
+# they don't show up in `git status` as untracked noise.
+/scratch/

@@ -1,0 +1,16 @@
+parameters:
+    level: max
+    paths:
+        - src
+    tmpDir: var/phpstan
+    bootstrapFiles:
+        - tests/phpstan-bootstrap.php
+    stubFiles:
+        - tests/stubs/ssh2.stub.php
+    # Tests are validated by PHPUnit at runtime; running PHPStan over them
+    # forces awkward `resource` ↔ mock-object plumbing that adds noise without
+    # catching real bugs. Re-enable if you start finding test-only regressions.
+includes:
+    - vendor/phpstan/phpstan-strict-rules/rules.neon
+    - vendor/phpstan/phpstan-phpunit/extension.neon
+    - vendor/phpstan/phpstan-phpunit/rules.neon

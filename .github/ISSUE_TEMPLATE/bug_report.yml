@@ -1,0 +1,94 @@
+name: Bug report
+description: Something the library is doing wrong, throwing on, or producing the wrong result for.
+labels: [bug, triage]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report. Please fill in the version
+        fields below — most bugs we've seen come down to a `ext-ssh2` /
+        libssh2 version mismatch, and we can triage faster if we know
+        what you're on.
+
+        **For security vulnerabilities, do NOT open a public issue.**
+        Use the private security advisory link instead — see
+        [SECURITY.md](https://github.com/ideaconnect/idct-sftp-client/blob/master/SECURITY.md).
+
+  - type: input
+    id: lib-version
+    attributes:
+      label: idct/sftp-client version
+      description: Exact version from `composer.json` or `composer show idct/sftp-client`.
+      placeholder: e.g. 1.1.0
+    validations:
+      required: true
+
+  - type: input
+    id: php-version
+    attributes:
+      label: PHP version
+      description: Output of `php -v` (first line is enough).
+      placeholder: e.g. PHP 8.3.12
+    validations:
+      required: true
+
+  - type: input
+    id: ext-ssh2-version
+    attributes:
+      label: ext-ssh2 version
+      description: Output of `php -r 'echo phpversion("ssh2");'`.
+      placeholder: e.g. 1.4.1
+    validations:
+      required: true
+
+  - type: input
+    id: libssh2-version
+    attributes:
+      label: libssh2 version
+      description: Output of `php -r 'echo SSH2_DEFAULT_BANNER;'` or `apt show libssh2` / `brew info libssh2`.
+      placeholder: e.g. 1.11.0
+
+  - type: input
+    id: sftp-server
+    attributes:
+      label: SFTP server
+      description: Which SFTP server / version is the client talking to?
+      placeholder: e.g. OpenSSH 9.3, atmoz/sftp, AWS Transfer Family
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: Describe the bug. Include the exact exception class and message if one was thrown.
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-expected
+    attributes:
+      label: What you expected
+      description: What did you think should have happened instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: |
+        A short PHP snippet that triggers the bug. Replace credentials /
+        hostnames with placeholders.
+      render: php
+      placeholder: |
+        $client = new SftpClient();
+        $client->setCredentials(Credentials::withPassword('user', '<redacted>'));
+        $client->connect('example.com');
+        $client->upload('/tmp/test.txt', '/uploads/test.txt');
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Anything else
+      description: Stack traces, log records, related issues, workarounds you've tried.
