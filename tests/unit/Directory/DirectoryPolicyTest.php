@@ -170,12 +170,27 @@ final class DirectoryPolicyTest extends TestCase
         // Cycle was detected; real file transferred exactly once.
         self::assertSame(1, $result->filesTransferred, 'real.txt uploaded exactly once');
         self::assertSame('real', $this->fixture->readRemote('/remote/inner/real.txt'));
-        // The cycle entry is in skipped with a "(cycle)" marker.
-        $cycleHits = array_filter(
-            $result->skipped,
-            static fn(string $p): bool => str_contains($p, '(cycle)'),
+        // Negative assertion — guards against an iteration-order regression
+        // where `loop` is processed before `inner`, the recurser descends
+        // into the link first and writes the real file under the cycle
+        // branch (e.g. /remote/loop/inner/real.txt). The visible signature
+        // of that bug is "test passes locally, fails on a CI runner whose
+        // filesystem returns dirents in a different order."
+        self::assertFalse(
+            $this->fixture->remoteExists('/remote/loop/inner/real.txt'),
+            'real.txt must not be uploaded under the cycle branch',
         );
-        self::assertNotEmpty($cycleHits, 'expected the cycle entry to be recorded as skipped');
+        // The cycle entry must reference the root-level link, not a
+        // nested copy of it. A buggy descent would record the cycle at
+        // ".../src/loop/loop" instead.
+        self::assertSame(
+            [$root . '/loop (cycle)'],
+            array_values(array_filter(
+                $result->skipped,
+                static fn(string $p): bool => str_contains($p, '(cycle)'),
+            )),
+            'cycle must be detected at the root-level link, not under a nested descent',
+        );
     }
 
     public function testUploadDirectoryFollowDetectsCycleNestedDeepInSubtree(): void
@@ -201,11 +216,21 @@ final class DirectoryPolicyTest extends TestCase
         // Leaf transferred once; no unbounded recursion.
         self::assertSame(1, $result->filesTransferred);
         self::assertSame('leaf', $this->fixture->readRemote('/remote/A/B/leaf.txt'));
-        $cycleHits = array_filter(
-            $result->skipped,
-            static fn(string $p): bool => str_contains($p, '(cycle)'),
+        // Negative assertion — leaf must not appear under the cycle branch.
+        self::assertFalse(
+            $this->fixture->remoteExists('/remote/A/B/loop/leaf.txt'),
+            'leaf.txt must not be uploaded under the nested cycle branch',
         );
-        self::assertNotEmpty($cycleHits, 'deep cycle should still be recorded under Follow');
+        // The cycle entry must be the deep link itself, never a doubled
+        // descent like /src/A/B/loop/loop.
+        self::assertSame(
+            [$root . '/A/B/loop (cycle)'],
+            array_values(array_filter(
+                $result->skipped,
+                static fn(string $p): bool => str_contains($p, '(cycle)'),
+            )),
+            'deep cycle must be recorded at the link itself, not after a re-entry',
+        );
     }
 
     // ─── Best-effort on upload ──────────────────────────────────────

@@ -1636,6 +1636,18 @@ final class SftpClient implements SftpClientInterface, LoggerAwareInterface
         $skipped = [];
         $failures = [];
         $visited = [];
+        // Seed cycle detector with the local root inode so a symlink
+        // pointing back at the upload's starting point trips the visited
+        // check before we recurse into it. Without this seed, iteration
+        // order determines whether real files end up under the cycle
+        // branch (e.g. /remote/loop/inner/real.txt) instead of the
+        // intended /remote/inner/real.txt.
+        if ($symlinks === SymlinkPolicy::Follow) {
+            $rootStat = @stat($localRoot);
+            if ($rootStat !== false) {
+                $visited[$rootStat['dev'] . ':' . $rootStat['ino']] = true;
+            }
+        }
 
         $this->log('debug', 'SFTP upload directory start', [
             'local' => $localRoot,
