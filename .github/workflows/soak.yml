@@ -40,9 +40,13 @@ jobs:
       - name: Composer install
         run: composer install --no-progress --no-interaction --prefer-dist
       - name: Generate fixture SSH keypair
+        # Idempotent — guards against the ssh-keygen overwrite prompt
+        # on workspace-cache re-runs (same rationale as ci.yml).
         run: |
           mkdir -p tests/functional/fixtures/keys
-          ssh-keygen -t rsa -b 2048 -N "" -f tests/functional/fixtures/keys/id_rsa -C "idct-sftp-soak"
+          if [ ! -f tests/functional/fixtures/keys/id_rsa ]; then
+            ssh-keygen -t rsa -b 2048 -N "" -f tests/functional/fixtures/keys/id_rsa -C "idct-sftp-soak"
+          fi
       - name: Start SFTP fixture (atmoz only)
         run: docker compose -f tests/functional/docker-compose.yml up -d --wait sftp
       - name: Soak
