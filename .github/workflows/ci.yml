@@ -51,6 +51,21 @@ jobs:
       - name: Enforce 100% line coverage
         if: matrix.php == '8.2'
         run: php tests/bin/check-coverage.php build/coverage/clover.xml 100
+      # Upload to Codecov on the floor-PHP build only — multi-version
+      # uploads would just produce duplicate reports against the same
+      # commit. `if: always()` so a failing local gate (line-coverage
+      # check above) still surfaces the report; Codecov UI is more
+      # useful than re-running locally to find which 1% slipped.
+      # CODECOV_TOKEN is optional for public repos but recommended:
+      # without it Codecov's rate limiting kicks in on busy days.
+      - name: Upload coverage to Codecov
+        if: always() && matrix.php == '8.2'
+        uses: codecov/codecov-action@v5
+        with:
+          files: build/coverage/clover.xml
+          flags: unit
+          fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}
 
   mutation:
     name: Mutation testing (Infection)

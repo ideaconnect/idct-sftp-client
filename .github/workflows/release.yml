@@ -105,7 +105,11 @@ jobs:
     # Only fires when the PACKAGIST_TOKEN secret is configured —
     # github→packagist sync covers most cases automatically; this is
     # belt-and-braces for repos where the webhook is misconfigured.
-    if: ${{ env.PACKAGIST_TOKEN != '' }}
+    # Note: `env.*` is not available in job-level `if:` expressions
+    # (env is materialised after the job starts), but `secrets.*` is
+    # — and comparing a secret to '' in an `if:` doesn't leak its
+    # value because GitHub only sees the boolean result.
+    if: ${{ secrets.PACKAGIST_TOKEN != '' }}
     env:
       PACKAGIST_TOKEN: ${{ secrets.PACKAGIST_TOKEN }}
       PACKAGIST_USER: ${{ secrets.PACKAGIST_USER }}
