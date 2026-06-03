@@ -4,6 +4,15 @@ on:
   push:
     branches: [master, main, "modernize/**", "modernized"]
   pull_request:
+  # Nightly run catches breakage that lands without a push to this repo:
+  # a transitive dep advisory surfacing in `composer audit`, a new PHP
+  # patch release on the matrix, or a refreshed docker fixture image
+  # (atmoz/sftp, OpenSSH) drifting from what the functional suite
+  # expects. 03:00 UTC ≈ 05:00 Europe/Warsaw (summer) / 04:00 (winter) —
+  # matches the SAST and Soak nightlies; adjust if you want a different
+  # local hour.
+  schedule:
+    - cron: "0 3 * * *"
 
 jobs:
   static:
