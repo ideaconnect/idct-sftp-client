@@ -88,7 +88,7 @@ jobs:
       # without it Codecov's rate limiting kicks in on busy days.
       - name: Upload coverage to Codecov
         if: always() && matrix.php == '8.2'
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v6
         with:
           files: build/coverage/clover.xml
           flags: unit
