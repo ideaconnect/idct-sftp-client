@@ -19,7 +19,7 @@ jobs:
     name: Static analysis & style
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
         with:
@@ -44,7 +44,7 @@ jobs:
       matrix:
         php: ["8.2", "8.3", "8.4"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
         with:
@@ -113,7 +113,7 @@ jobs:
     # floor catches "the test still passes but the mutant survived" cases
     # without paying the cost three times.
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
         with:
@@ -150,7 +150,7 @@ jobs:
           - { name: atmoz,   port: 2222, behat_tags: "~@needs-shell" }
           - { name: openssh, port: 2223, behat_tags: "" }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
         with:
