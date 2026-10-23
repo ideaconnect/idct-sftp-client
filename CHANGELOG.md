@@ -18,6 +18,8 @@ and refreshes the toolchain.
   `streamed-from-s3-payload`, and example 07 reads `S3_URL` (was
   `MINIO_URL`).
 * toxiproxy fixture image 2.9.0 → 2.13.0.
+* The SAST (Psalm taint analysis) workflow can also be started by hand
+  (`workflow_dispatch`), like Soak already could.
 
 ### Dependencies
 
