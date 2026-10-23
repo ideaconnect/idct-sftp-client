@@ -327,7 +327,7 @@ needed.
 
 > **Verified by Behat:**
 > [`s3-stream.feature`](tests/functional/features/s3-stream.feature)
-> (round-trips a payload served by minio),
+> (round-trips a payload served by the S3Mock fixture),
 > [`streaming-progress.feature`](tests/functional/features/streaming-progress.feature)
 > (uploadStream from `php://memory`, downloadStream into an in-memory sink).
 > **Unit tests:** [`StreamingAndProgressTest`](tests/unit/StreamingAndProgressTest.php).
@@ -628,7 +628,7 @@ command.
 | 04 | [`04-retry-policy.php`](examples/04-retry-policy.php) | Customise `ExponentialBackoffRetryPolicy` |
 | 05 | [`05-upload-directory.php`](examples/05-upload-directory.php) | Recursive upload with `ConflictPolicy::Skip` |
 | 06 | [`06-walk-and-cleanup.php`](examples/06-walk-and-cleanup.php) | `walk()` + `removeDirectoryTree()` |
-| 07 | [`07-stream-from-s3.php`](examples/07-stream-from-s3.php) | `uploadStream` an HTTP object served by minio |
+| 07 | [`07-stream-from-s3.php`](examples/07-stream-from-s3.php) | `uploadStream` an HTTP object served by an S3 server |
 
 ## Upgrading from 0.x
 
@@ -665,7 +665,7 @@ composer cs-fix               # apply CS fixes
 composer stan                 # phpstan level max
 composer test                 # phpunit (100% line coverage gate)
 composer infection            # mutation testing (gates at 85 MSI / 85 covered MSI)
-tests/functional/bin/up       # start dockerised SFTP fixtures (atmoz + openssh + minio + toxiproxy)
+tests/functional/bin/up       # start dockerised SFTP fixtures (atmoz + openssh + S3Mock + toxiproxy)
 composer behat                # run Behat against the fixture
 SFTP_PORT=2223 composer behat # run the same suite against OpenSSH 9.x
 tests/functional/bin/down     # stop fixture

@@ -14,14 +14,15 @@ self-contained, prints what it's doing, and cleans up after itself.
 ## Bring up the fixture
 
 ```bash
-# atmoz/sftp (port 2222) + OpenSSH 9.x (2223) + minio (9000) + toxiproxy (8474)
+# atmoz/sftp (port 2222) + OpenSSH 9.x (2223) + S3Mock (9000) + toxiproxy (8474)
 tests/functional/bin/up
 ```
 
 The defaults below all assume **atmoz/sftp on `127.0.0.1:2222`** (user
-`tester` / password `testerpass`) and **minio on `127.0.0.1:9000`** for
-example 07. Override per-script via the `SFTP_HOST` / `SFTP_PORT` /
-`SFTP_USER` / `SFTP_PASS` env vars if you point them at your own server.
+`tester` / password `testerpass`) and **an S3-compatible server (Adobe
+S3Mock) on `127.0.0.1:9000`** for example 07. Override per-script via the
+`SFTP_HOST` / `SFTP_PORT` / `SFTP_USER` / `SFTP_PASS` env vars (and
+`S3_URL` for example 07) if you point them at your own servers.
 
 When done:
 
@@ -39,7 +40,7 @@ tests/functional/bin/down
 | 04 | [`04-retry-policy.php`](04-retry-policy.php) | Plug a custom `RetryPolicyInterface` that prints every retry decision, then trigger a transient failure to see the backoff kick in. |
 | 05 | [`05-upload-directory.php`](05-upload-directory.php) | Build a nested local tree, recursively upload it under `/data/example-tree/`, then re-run with `ConflictPolicy::Skip` to show idempotence. |
 | 06 | [`06-walk-and-cleanup.php`](06-walk-and-cleanup.php) | `walk()` the tree created by example 05, print each entry, then `removeDirectoryTree()` to wipe it. |
-| 07 | [`07-stream-from-s3.php`](07-stream-from-s3.php) | Seed minio with a payload, `fopen` its public HTTP URL, pipe the stream into `uploadStream()`. The same pattern works with `\Aws\S3\S3Client->getObject()->get('Body')->detach()`. |
+| 07 | [`07-stream-from-s3.php`](07-stream-from-s3.php) | Read a payload seeded into the S3 fixture, `fopen` its HTTP URL, pipe the stream into `uploadStream()`. The same pattern works with `\Aws\S3\S3Client->getObject()->get('Body')->detach()`. |
 
 ## Running
 
