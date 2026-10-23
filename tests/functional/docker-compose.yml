@@ -79,7 +79,7 @@ services:
   # adversarial traffic. The proxies are managed by the Behat scenarios
   # via toxiproxy's HTTP API on 8474.
   toxiproxy:
-    image: ghcr.io/shopify/toxiproxy:2.9.0
+    image: ghcr.io/shopify/toxiproxy:2.13.0
     container_name: idct-toxiproxy-fixture
     ports:
       - "127.0.0.1:8474:8474"   # admin / control API
