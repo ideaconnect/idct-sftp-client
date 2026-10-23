@@ -1,13 +1,13 @@
 <?php
 /**
- * 07 — uploadStream from an S3 (minio) HTTP source
+ * 07 — uploadStream from an S3 HTTP source
  *
- * Bring up the fixture with `tests/functional/bin/up`; the `minio-init`
- * one-shot container pre-seeds an anonymous-read bucket containing
- * `payload.bin` with the bytes "streamed-from-minio-s3-payload".
+ * Bring up the fixture with `tests/functional/bin/up`; the `s3-init`
+ * one-shot container seeds the S3Mock fixture with an `idct-test` bucket
+ * holding `payload.bin` with the bytes "streamed-from-s3-payload".
  *
  * This script:
- *   1. fopen()s the minio HTTP URL (non-seekable stream).
+ *   1. fopen()s the object's HTTP URL (non-seekable stream).
  *   2. Pipes it into SftpClient::uploadStream — chunked copy, atomic
  *      rename onto the destination.
  *   3. Downloads the destination back and prints what landed.
@@ -24,16 +24,16 @@ declare(strict_types=1);
 
 require __DIR__ . '/_bootstrap.php';
 
-$minioUrl = getenv('MINIO_URL') !== false
-    ? (string) getenv('MINIO_URL')
+$s3Url = getenv('S3_URL') !== false
+    ? (string) getenv('S3_URL')
     : 'http://127.0.0.1:9000/idct-test/payload.bin';
 
 $client = idct_example_client();
 
-idct_example_section("open HTTP stream from minio ({$minioUrl})");
-$stream = @fopen($minioUrl, 'rb');
+idct_example_section("open HTTP stream from S3 ({$s3Url})");
+$stream = @fopen($s3Url, 'rb');
 if ($stream === false) {
-    fwrite(STDERR, "Could not open {$minioUrl} — is the minio fixture running?\n");
+    fwrite(STDERR, "Could not open {$s3Url} — is the S3 fixture running?\n");
     fwrite(STDERR, "Run `tests/functional/bin/up` from the repo root.\n");
     exit(1);
 }

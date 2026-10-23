@@ -49,26 +49,29 @@ services:
       retries: 60
 
   # P6 follow-up: an S3-compatible source for the upload-from-S3-stream
-  # Behat scenario. minio exposes its S3 API on 9000; the one-shot
-  # bucket init below seeds an `idct-test` bucket with a public-read
-  # policy + a `payload.bin` object the scenario streams via plain HTTP
+  # Behat scenario. Adobe S3Mock serves the S3 REST API on 9090, published
+  # on 127.0.0.1:9000; the one-shot s3-init below creates an `idct-test`
+  # bucket + a `payload.bin` object the scenario streams via plain HTTP
   # (`fopen('http://127.0.0.1:9000/idct-test/payload.bin', 'rb')`) into
-  # SftpClient::uploadStream. Plain HTTP keeps the test off any AWS SDK
-  # dependency.
-  minio:
-    image: minio/minio:RELEASE.2024-08-17T01-24-54Z
-    container_name: idct-minio-fixture
+  # SftpClient::uploadStream. S3Mock accepts unsigned requests, so plain
+  # HTTP both seeds and reads it — no AWS SDK dependency.
+  #
+  # This used to be minio/minio. MinIO took its images off Docker Hub
+  # (and quay.io), so every pull fails with "pull access denied" and the
+  # whole functional matrix died at fixture start-up (nightly CI red since
+  # 2026-09-12).
+  s3:
+    image: adobe/s3mock:5.2.3
+    container_name: idct-s3-fixture
     ports:
-      - "127.0.0.1:9000:9000"
-    environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
-    command: server /data
+      - "127.0.0.1:9000:9090"
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:9000/minio/health/live"]
+      # /favicon.ico is S3Mock's always-on readiness probe (200, empty
+      # body). The image ships busybox wget but no curl.
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:9090/favicon.ico"]
       interval: 2s
       timeout: 2s
-      retries: 30
+      retries: 60
 
   # P11 follow-up: toxiproxy as a man-in-the-middle between Behat and
   # the SFTP servers, exposing controlled latency / bandwidth / packet-
@@ -76,7 +79,7 @@ services:
   # adversarial traffic. The proxies are managed by the Behat scenarios
   # via toxiproxy's HTTP API on 8474.
   toxiproxy:
-    image: ghcr.io/shopify/toxiproxy:2.9.0
+    image: ghcr.io/shopify/toxiproxy:2.13.0
     container_name: idct-toxiproxy-fixture
     ports:
       - "127.0.0.1:8474:8474"   # admin / control API
@@ -92,24 +95,23 @@ services:
       timeout: 2s
       retries: 30
 
-  # One-shot: alias, create bucket, set anonymous download policy, upload
-  # a fixture object. Exits 0; depends_on in the scenario assertion
-  # against the s3 URL.
-  minio-init:
-    image: minio/mc:RELEASE.2024-08-17T11-33-50Z
-    container_name: idct-minio-init
+  # One-shot: create the bucket, upload the fixture object (both plain S3
+  # REST calls). Exits 0; the scenario asserts against the s3 URL.
+  s3-init:
+    image: curlimages/curl:8.23.0
+    container_name: idct-s3-init
     depends_on:
-      minio:
+      s3:
         condition: service_healthy
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
         set -eu
-        mc alias set local http://minio:9000 minioadmin minioadmin
-        mc mb -p local/idct-test
-        mc anonymous set download local/idct-test
-        echo -n 'streamed-from-minio-s3-payload' | mc pipe local/idct-test/payload.bin
-        echo "minio fixture seeded."
+        curl -fsS -o /dev/null -X PUT http://s3:9090/idct-test
+        printf '%s' 'streamed-from-s3-payload' \
+          | curl -fsS -o /dev/null -X PUT -H 'Content-Type: application/octet-stream' \
+              --data-binary @- http://s3:9090/idct-test/payload.bin
+        echo "s3 fixture seeded."
 
 volumes:
   sftp_data:

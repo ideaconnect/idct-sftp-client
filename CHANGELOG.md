@@ -1,5 +1,35 @@
 # Changelog
 
+## 1.0.1 — 2026-10-23
+
+Maintenance release: no library code changes. It brings CI back to green
+and refreshes the toolchain.
+
+### Testing & CI
+
+* Functional suite: the S3 fixture behind `s3-stream.feature` and
+  `examples/07-stream-from-s3.php` is now Adobe S3Mock
+  (`adobe/s3mock:5.2.3`), seeded by a one-shot `curlimages/curl:8.23.0`
+  container. MinIO's images can no longer be pulled from Docker Hub or
+  quay.io ("pull access denied"), so since 2026-09-12 every functional CI
+  leg failed at fixture start-up. Same address (`127.0.0.1:9000`), bucket
+  and object path. The compose services are renamed `minio` → `s3` and
+  `minio-init` → `s3-init`, the seeded payload is now
+  `streamed-from-s3-payload`, and example 07 reads `S3_URL` (was
+  `MINIO_URL`).
+* toxiproxy fixture image 2.9.0 → 2.13.0.
+* The SAST (Psalm taint analysis) workflow can also be started by hand
+  (`workflow_dispatch`), like Soak already could.
+
+### Dependencies
+
+* Dev-dependency floors raised to the current releases
+  (`composer bump --dev-only`): behat ^3.34, php-cs-fixer ^3.95.27,
+  eris ^1.3, infection ^0.29.14, phpstan ^2.3.1, phpstan-phpunit ^2.1.1,
+  phpstan-strict-rules ^2.1, phpunit ^11.5.57 || ^12.0, rector ^2.7.
+  Runtime requirements are unchanged (`psr/log ^3.0` already admits the
+  latest 3.0.2).
+
 ## 1.0.0 — 2026-05-20
 
 The 1.0 release bundles two passes of work into a single first-stable

@@ -21,6 +21,9 @@ on:
   # 04:00 (winter) — adjust if you want a different local hour.
   schedule:
     - cron: "0 3 * * *"
+  # Manual run, e.g. to check the workflow right after re-enabling it
+  # (GitHub disables scheduled workflows after 60 days without activity).
+  workflow_dispatch:
 
 jobs:
   psalm:
