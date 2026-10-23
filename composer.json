@@ -27,7 +27,7 @@
         "psr/log": "^3.0"
     },
     "require-dev": {
-        "behat/behat": "^3.34",
+        "behat/behat": "^3.34 || ^4.0",
         "friendsofphp/php-cs-fixer": "^3.95.27",
         "giorgiosironi/eris": "^1.3",
         "infection/infection": "^0.29.14",
