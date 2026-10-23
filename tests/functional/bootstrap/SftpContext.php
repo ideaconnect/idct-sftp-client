@@ -9,6 +9,9 @@ use Behat\Gherkin\Node\TableNode;
 use Behat\Hook\AfterSuite;
 use Behat\Hook\BeforeScenario;
 use Behat\Hook\BeforeSuite;
+use Behat\Step\Given;
+use Behat\Step\Then;
+use Behat\Step\When;
 use IDCT\Networking\Ssh\Auth\Credentials;
 use IDCT\Networking\Ssh\Auth\StaticCredentialsLoader;
 use IDCT\Networking\Ssh\Checksum\RedownloadRemoteHasher;
@@ -32,6 +35,7 @@ use IDCT\Networking\Ssh\Retry\NoRetryPolicy;
 use IDCT\Networking\Ssh\SftpClient;
 use IDCT\Networking\Ssh\Tests\Support\CapturingLogger;
 use PHPUnit\Framework\Assert;
+use PHPUnit\TextUI\Configuration\Builder as PhpUnitConfigurationBuilder;
 
 /**
  * Behat context that drives a real ext-ssh2 client against one of the
@@ -80,6 +84,20 @@ final class SftpContext implements Context
     private ?CapturingLogger $capturingLogger = null;
 
     #[BeforeSuite]
+    public static function bootstrapPhpUnitAssertions(): void
+    {
+        // The steps assert with PHPUnit\Framework\Assert. Since 11.3 PHPUnit
+        // expects its configuration registry to be initialised before any
+        // assertion, which Behat 4 core no longer does: without this, a
+        // failing assertion surfaces as a TypeError from
+        // PHPUnit\TextUI\Configuration\Registry::get() instead of its
+        // message. Same one-liner as behat/phpunit-assertions-extension,
+        // whose 1.0.0 cannot boot on Behat 4.0.0 (upstream issue
+        // Behat/PHPUnitAssertionsExtension#11).
+        (new PhpUnitConfigurationBuilder())->build([]);
+    }
+
+    #[BeforeSuite]
     public static function startFixture(): void
     {
         // The bin/up script is the documented entrypoint; CI runs it explicitly.
@@ -118,9 +136,7 @@ final class SftpContext implements Context
         }
     }
 
-    /**
-     * @Given /^I have a connected SFTP client$/
-     */
+    #[Given('/^I have a connected SFTP client$/')]
     public function iHaveAConnectedSftpClient(): void
     {
         $this->client = new SftpClient();
@@ -128,9 +144,7 @@ final class SftpContext implements Context
         $this->client->connect($this->host, $this->port);
     }
 
-    /**
-     * @Given /^the remote directory "([^"]+)" is empty$/
-     */
+    #[Given('/^the remote directory "([^"]+)" is empty$/')]
     public function theRemoteDirectoryIsEmpty(string $path): void
     {
         $client = $this->requireClient();
@@ -158,9 +172,7 @@ final class SftpContext implements Context
         }
     }
 
-    /**
-     * @Given /^I have a local file "([^"]+)" containing "([^"]*)"$/
-     */
+    #[Given('/^I have a local file "([^"]+)" containing "([^"]*)"$/')]
     public function iHaveALocalFile(string $name, string $contents): void
     {
         $path = $this->tmpDir . '/' . $name;
@@ -171,9 +183,7 @@ final class SftpContext implements Context
         file_put_contents($path, $contents);
     }
 
-    /**
-     * @When /^I connect with password authentication$/
-     */
+    #[When('/^I connect with password authentication$/')]
     public function iConnectWithPassword(): void
     {
         $this->client = new SftpClient();
@@ -181,9 +191,7 @@ final class SftpContext implements Context
         $this->tryConnect();
     }
 
-    /**
-     * @When /^I connect with a wrong password$/
-     */
+    #[When('/^I connect with a wrong password$/')]
     public function iConnectWithWrongPassword(): void
     {
         $this->client = new SftpClient();
@@ -191,9 +199,7 @@ final class SftpContext implements Context
         $this->tryConnect();
     }
 
-    /**
-     * @When /^I connect with public-key authentication$/
-     */
+    #[When('/^I connect with public-key authentication$/')]
     public function iConnectWithPubkey(): void
     {
         $this->client = new SftpClient();
@@ -205,9 +211,7 @@ final class SftpContext implements Context
         $this->tryConnect();
     }
 
-    /**
-     * @When /^I connect requiring fingerprint "([^"]+)"$/
-     */
+    #[When('/^I connect requiring fingerprint "([^"]+)"$/')]
     public function iConnectWithFingerprint(string $fingerprint): void
     {
         $this->client = new SftpClient();
@@ -227,9 +231,7 @@ final class SftpContext implements Context
         }
     }
 
-    /**
-     * @When /^I upload "([^"]+)" to "([^"]+)"$/
-     */
+    #[When('/^I upload "([^"]+)" to "([^"]+)"$/')]
     public function iUpload(string $localName, string $remotePath): void
     {
         try {
@@ -239,9 +241,7 @@ final class SftpContext implements Context
         }
     }
 
-    /**
-     * @When /^I download "([^"]+)" to "([^"]+)"$/
-     */
+    #[When('/^I download "([^"]+)" to "([^"]+)"$/')]
     public function iDownload(string $remotePath, string $localName): void
     {
         try {
@@ -251,9 +251,7 @@ final class SftpContext implements Context
         }
     }
 
-    /**
-     * @When /^I upload "([^"]+)" to "([^"]+)" with atomic mode on$/
-     */
+    #[When('/^I upload "([^"]+)" to "([^"]+)" with atomic mode on$/')]
     public function iUploadAtomic(string $localName, string $remotePath): void
     {
         // The default client already runs atomic uploads; we re-enable
@@ -268,9 +266,7 @@ final class SftpContext implements Context
         }
     }
 
-    /**
-     * @Given /^a remote partial "([^"]+)" exists with contents "([^"]*)"$/
-     */
+    #[Given('/^a remote partial "([^"]+)" exists with contents "([^"]*)"$/')]
     public function aRemotePartialExists(string $remotePath, string $contents): void
     {
         // Pre-stage a partial by uploading then renaming via the client
@@ -287,9 +283,7 @@ final class SftpContext implements Context
             ->enableAtomicUploads();
     }
 
-    /**
-     * @Given /^the remote file "([^"]+)" already contains "([^"]*)"$/
-     */
+    #[Given('/^the remote file "([^"]+)" already contains "([^"]*)"$/')]
     public function seedRemoteFile(string $remotePath, string $contents): void
     {
         // Variation of upload used for "given" preconditions — distinct
@@ -317,9 +311,7 @@ final class SftpContext implements Context
             ->enableAtomicUploads();
     }
 
-    /**
-     * @When /^I resume upload of "([^"]+)" to "([^"]+)"$/
-     */
+    #[When('/^I resume upload of "([^"]+)" to "([^"]+)"$/')]
     public function iResumeUpload(string $localName, string $remotePath): void
     {
         try {
@@ -329,9 +321,7 @@ final class SftpContext implements Context
         }
     }
 
-    /**
-     * @When /^I resume download of "([^"]+)" to "([^"]+)"$/
-     */
+    #[When('/^I resume download of "([^"]+)" to "([^"]+)"$/')]
     public function iResumeDownload(string $remotePath, string $localName): void
     {
         try {
@@ -341,9 +331,7 @@ final class SftpContext implements Context
         }
     }
 
-    /**
-     * @Given /^I have a toxiproxy SFTP proxy named "([^"]+)" to atmoz on port (\d+)$/
-     */
+    #[Given('/^I have a toxiproxy SFTP proxy named "([^"]+)" to atmoz on port (\d+)$/')]
     public function iHaveAToxiproxy(string $name, int $listenPort): void
     {
         // Toxiproxy's "upstream" is the host the proxy forwards to. From
@@ -361,9 +349,7 @@ final class SftpContext implements Context
         $this->toxiproxyName = $name;
     }
 
-    /**
-     * @Given /^I have a connected SFTP client via the "([^"]+)" proxy$/
-     */
+    #[Given('/^I have a connected SFTP client via the "([^"]+)" proxy$/')]
     public function iHaveAConnectedClientViaProxy(string $name): void
     {
         $this->client = new SftpClient();
@@ -371,9 +357,7 @@ final class SftpContext implements Context
         $this->client->connect($this->host, 22122);
     }
 
-    /**
-     * @Given /^a (\d+)ms latency toxic is added to "([^"]+)"$/
-     */
+    #[Given('/^a (\d+)ms latency toxic is added to "([^"]+)"$/')]
     public function aLatencyToxic(int $latencyMs, string $name): void
     {
         $payload = json_encode([
@@ -385,9 +369,7 @@ final class SftpContext implements Context
         $this->toxiproxyApi('POST', '/proxies/' . $name . '/toxics', $payload);
     }
 
-    /**
-     * @Given /^a (\d+)-byte-per-second bandwidth toxic is added to "([^"]+)"$/
-     */
+    #[Given('/^a (\d+)-byte-per-second bandwidth toxic is added to "([^"]+)"$/')]
     public function aBandwidthToxic(int $bytesPerSec, string $name): void
     {
         $payload = json_encode([
@@ -403,9 +385,8 @@ final class SftpContext implements Context
      * Flip the proxy's `enabled` flag. Disabling drops all in-flight
      * connections (the existing SFTP session is reset); re-enabling
      * resumes forwarding so a fresh reconnect can complete.
-     *
-     * @Given /^the "([^"]+)" proxy is (disabled|enabled)$/
      */
+    #[Given('/^the "([^"]+)" proxy is (disabled|enabled)$/')]
     public function toggleProxyEnabled(string $name, string $state): void
     {
         $payload = json_encode([
@@ -442,9 +423,7 @@ final class SftpContext implements Context
         }
     }
 
-    /**
-     * @Given /^I have an HTTP stream from "([^"]+)"$/
-     */
+    #[Given('/^I have an HTTP stream from "([^"]+)"$/')]
     public function iHaveAnHttpStream(string $url): void
     {
         // fopen on http:// goes through PHP's stream wrapper; the stream
@@ -455,9 +434,7 @@ final class SftpContext implements Context
         $this->memoryStream = $stream;
     }
 
-    /**
-     * @Given /^I have an in-memory stream containing "([^"]*)"$/
-     */
+    #[Given('/^I have an in-memory stream containing "([^"]*)"$/')]
     public function iHaveAnInMemoryStream(string $contents): void
     {
         $stream = fopen('php://memory', 'r+b');
@@ -467,9 +444,7 @@ final class SftpContext implements Context
         $this->memoryStream = $stream;
     }
 
-    /**
-     * @When /^I uploadStream to "([^"]+)"$/
-     */
+    #[When('/^I uploadStream to "([^"]+)"$/')]
     public function iUploadStream(string $remotePath): void
     {
         try {
@@ -483,9 +458,7 @@ final class SftpContext implements Context
         }
     }
 
-    /**
-     * @When /^I downloadStream "([^"]+)" into a sink$/
-     */
+    #[When('/^I downloadStream "([^"]+)" into a sink$/')]
     public function iDownloadStreamIntoSink(string $remotePath): void
     {
         try {
@@ -498,9 +471,7 @@ final class SftpContext implements Context
         }
     }
 
-    /**
-     * @Then /^the sink received "([^"]*)"$/
-     */
+    #[Then('/^the sink received "([^"]*)"$/')]
     public function sinkReceived(string $expected): void
     {
         $sink = $this->sinkStream;
@@ -512,17 +483,13 @@ final class SftpContext implements Context
         Assert::assertSame($expected, $got);
     }
 
-    /**
-     * @Then /^the reported byte count is (\d+)$/
-     */
+    #[Then('/^the reported byte count is (\d+)$/')]
     public function reportedByteCount(int $expected): void
     {
         Assert::assertSame($expected, $this->lastDownloadBytes);
     }
 
-    /**
-     * @Given /^a progress listener is attached$/
-     */
+    #[Given('/^a progress listener is attached$/')]
     public function progressListenerIsAttached(): void
     {
         $this->progressRecorder = new class implements ProgressListenerInterface {
@@ -551,17 +518,13 @@ final class SftpContext implements Context
         };
     }
 
-    /**
-     * @Given /^the chunk size is (\d+)$/
-     */
+    #[Given('/^the chunk size is (\d+)$/')]
     public function chunkSizeIs(int $bytes): void
     {
         $this->requireClient()->setChunkSize($bytes);
     }
 
-    /**
-     * @When /^I upload "([^"]+)" to "([^"]+)" with the listener$/
-     */
+    #[When('/^I upload "([^"]+)" to "([^"]+)" with the listener$/')]
     public function iUploadWithListener(string $localName, string $remotePath): void
     {
         try {
@@ -573,9 +536,7 @@ final class SftpContext implements Context
         }
     }
 
-    /**
-     * @Then /^the listener observed the lifecycle started, progress, completed for "([^"]+)"$/
-     */
+    #[Then('/^the listener observed the lifecycle started, progress, completed for "([^"]+)"$/')]
     public function listenerObservedLifecycle(string $operation): void
     {
         $rec = $this->progressRecorder;
@@ -591,9 +552,7 @@ final class SftpContext implements Context
         Assert::assertGreaterThan(0, $progressCount, 'expected at least one progress emission');
     }
 
-    /**
-     * @Then /^the listener observed a final byte count of (\d+)$/
-     */
+    #[Then('/^the listener observed a final byte count of (\d+)$/')]
     public function listenerFinalByteCount(int $expected): void
     {
         $rec = $this->progressRecorder;
@@ -604,9 +563,7 @@ final class SftpContext implements Context
         Assert::assertSame($expected, $events[count($events) - 1]['args'][0]);
     }
 
-    /**
-     * @Given /^I have a local directory "([^"]+)" with files:$/
-     */
+    #[Given('/^I have a local directory "([^"]+)" with files:$/')]
     public function iHaveALocalDirectoryWithFiles(string $dir, TableNode $table): void
     {
         $root = $this->tmpDir . '/' . trim($dir, '/');
@@ -623,9 +580,7 @@ final class SftpContext implements Context
         }
     }
 
-    /**
-     * @Given /^the local directory "([^"]+)" also has an empty subdirectory "([^"]+)"$/
-     */
+    #[Given('/^the local directory "([^"]+)" also has an empty subdirectory "([^"]+)"$/')]
     public function localDirHasEmptySubdir(string $dir, string $sub): void
     {
         $path = $this->tmpDir . '/' . trim($dir, '/') . '/' . trim($sub, '/');
@@ -634,9 +589,7 @@ final class SftpContext implements Context
         }
     }
 
-    /**
-     * @When /^I uploadDirectory "([^"]+)" to "([^"]+)"$/
-     */
+    #[When('/^I uploadDirectory "([^"]+)" to "([^"]+)"$/')]
     public function iUploadDirectory(string $localDir, string $remoteDir): void
     {
         try {
@@ -649,9 +602,7 @@ final class SftpContext implements Context
         }
     }
 
-    /**
-     * @When /^I downloadDirectory "([^"]+)" to "([^"]+)"$/
-     */
+    #[When('/^I downloadDirectory "([^"]+)" to "([^"]+)"$/')]
     public function iDownloadDirectory(string $remoteDir, string $localDir): void
     {
         try {
@@ -664,9 +615,7 @@ final class SftpContext implements Context
         }
     }
 
-    /**
-     * @When /^I removeDirectoryTree "([^"]+)"$/
-     */
+    #[When('/^I removeDirectoryTree "([^"]+)"$/')]
     public function iRemoveDirectoryTree(string $remoteDir): void
     {
         try {
@@ -682,9 +631,8 @@ final class SftpContext implements Context
      * `parent` resolves to `..` style targets) OR an absolute path.
      * The link source is always relative to the per-scenario tmpdir so
      * scenarios stay isolated.
-     *
-     * @Given /^the local directory "([^"]+)" has a symlink "([^"]+)" pointing to "([^"]+)"$/
      */
+    #[Given('/^the local directory "([^"]+)" has a symlink "([^"]+)" pointing to "([^"]+)"$/')]
     public function localDirectoryHasSymlink(string $dir, string $linkName, string $target): void
     {
         $parent = $this->tmpDir . '/' . trim($dir, '/');
@@ -759,9 +707,7 @@ final class SftpContext implements Context
         return $opts;
     }
 
-    /**
-     * @When /^I uploadDirectory "([^"]+)" to "([^"]+)" with policies "([^"]*)"$/
-     */
+    #[When('/^I uploadDirectory "([^"]+)" to "([^"]+)" with policies "([^"]*)"$/')]
     public function iUploadDirectoryWithPolicies(string $localDir, string $remoteDir, string $rawOptions): void
     {
         $opts = $this->parseDirOptions($rawOptions);
@@ -781,9 +727,7 @@ final class SftpContext implements Context
         }
     }
 
-    /**
-     * @When /^I downloadDirectory "([^"]+)" to "([^"]+)" with policies "([^"]*)"$/
-     */
+    #[When('/^I downloadDirectory "([^"]+)" to "([^"]+)" with policies "([^"]*)"$/')]
     public function iDownloadDirectoryWithPolicies(string $remoteDir, string $localDir, string $rawOptions): void
     {
         $opts = $this->parseDirOptions($rawOptions);
@@ -802,18 +746,14 @@ final class SftpContext implements Context
         }
     }
 
-    /**
-     * @Then /^the upload result reports (\d+) skipped entr(?:y|ies)$/
-     */
+    #[Then('/^the upload result reports (\d+) skipped entr(?:y|ies)$/')]
     public function uploadResultSkippedCount(int $expected): void
     {
         $r = $this->requireUploadResult();
         Assert::assertCount($expected, $r->skipped, 'skipped[] = ' . implode(', ', $r->skipped));
     }
 
-    /**
-     * @Then /^the upload result reports (\d+) failures?$/
-     */
+    #[Then('/^the upload result reports (\d+) failures?$/')]
     public function uploadResultFailureCount(int $expected): void
     {
         $r = $this->requireUploadResult();
@@ -821,9 +761,7 @@ final class SftpContext implements Context
         Assert::assertCount($expected, $r->failures, 'failures[] = ' . $debug);
     }
 
-    /**
-     * @Then /^the upload result records a cycle skip$/
-     */
+    #[Then('/^the upload result records a cycle skip$/')]
     public function uploadResultRecordsCycle(): void
     {
         $r = $this->requireUploadResult();
@@ -834,9 +772,7 @@ final class SftpContext implements Context
         );
     }
 
-    /**
-     * @Then /^the download result reports (\d+) files and (\d+) bytes transferred$/
-     */
+    #[Then('/^the download result reports (\d+) files and (\d+) bytes transferred$/')]
     public function downloadResultReports(int $files, int $bytes): void
     {
         $r = $this->requireDownloadResult();
@@ -844,18 +780,14 @@ final class SftpContext implements Context
         Assert::assertSame($bytes, $r->bytesTransferred, 'bytesTransferred mismatch');
     }
 
-    /**
-     * @Then /^the download result reports (\d+) skipped entr(?:y|ies)$/
-     */
+    #[Then('/^the download result reports (\d+) skipped entr(?:y|ies)$/')]
     public function downloadResultSkippedCount(int $expected): void
     {
         $r = $this->requireDownloadResult();
         Assert::assertCount($expected, $r->skipped, 'skipped[] = ' . implode(', ', $r->skipped));
     }
 
-    /**
-     * @Then /^the download result reports (\d+) failures?$/
-     */
+    #[Then('/^the download result reports (\d+) failures?$/')]
     public function downloadResultFailureCount(int $expected): void
     {
         $r = $this->requireDownloadResult();
@@ -887,9 +819,7 @@ final class SftpContext implements Context
         return $this->lastDownloadResult;
     }
 
-    /**
-     * @Then /^the upload result reports (\d+) files and (\d+) bytes transferred$/
-     */
+    #[Then('/^the upload result reports (\d+) files and (\d+) bytes transferred$/')]
     public function uploadResultReports(int $files, int $bytes): void
     {
         $r = $this->lastUploadResult;
@@ -910,17 +840,13 @@ final class SftpContext implements Context
         }
     }
 
-    /**
-     * @Then /^the local directory "([^"]+)" exists$/
-     */
+    #[Then('/^the local directory "([^"]+)" exists$/')]
     public function localDirectoryExists(string $dir): void
     {
         Assert::assertDirectoryExists($this->tmpDir . '/' . trim($dir, '/'));
     }
 
-    /**
-     * @Then /^the remote directory "([^"]+)" no longer exists$/
-     */
+    #[Then('/^the remote directory "([^"]+)" no longer exists$/')]
     public function remoteDirectoryGone(string $dir): void
     {
         // fileExists on a directory path returns true if it's there, false if not.
@@ -930,18 +856,14 @@ final class SftpContext implements Context
         );
     }
 
-    /**
-     * @Given /^I have an empty known_hosts file$/
-     */
+    #[Given('/^I have an empty known_hosts file$/')]
     public function emptyKnownHostsFile(): void
     {
         $this->knownHostsPath = $this->tmpDir . '/known_hosts';
         file_put_contents($this->knownHostsPath, '');
     }
 
-    /**
-     * @Given /^I have a known_hosts file with a tampered fingerprint for ([^\s]+)$/
-     */
+    #[Given('/^I have a known_hosts file with a tampered fingerprint for ([^\s]+)$/')]
     public function tamperedKnownHostsFile(string $host): void
     {
         $this->knownHostsPath = $this->tmpDir . '/known_hosts';
@@ -956,9 +878,7 @@ final class SftpContext implements Context
         );
     }
 
-    /**
-     * @Given /^I connect once with the known_hosts file and TrustOnFirstUse$/
-     */
+    #[Given('/^I connect once with the known_hosts file and TrustOnFirstUse$/')]
     public function iConnectOnceWithTofu(): void
     {
         $primer = new SftpClient();
@@ -972,9 +892,7 @@ final class SftpContext implements Context
         $primer->close();
     }
 
-    /**
-     * @When /^I connect with the known_hosts file and TrustOnFirstUse$/
-     */
+    #[When('/^I connect with the known_hosts file and TrustOnFirstUse$/')]
     public function iConnectWithTofu(): void
     {
         $this->client = new SftpClient();
@@ -992,9 +910,7 @@ final class SftpContext implements Context
         }
     }
 
-    /**
-     * @When /^I connect with the known_hosts file and Reject policy$/
-     */
+    #[When('/^I connect with the known_hosts file and Reject policy$/')]
     public function iConnectWithReject(): void
     {
         $this->client = new SftpClient();
@@ -1012,9 +928,7 @@ final class SftpContext implements Context
         }
     }
 
-    /**
-     * @Then /^the known_hosts file now lists 127\.0\.0\.1 with a sha256-fpr entry$/
-     */
+    #[Then('/^the known_hosts file now lists 127\.0\.0\.1 with a sha256-fpr entry$/')]
     public function knownHostsFileListsTofuEntry(): void
     {
         Assert::assertNotNull($this->knownHostsPath);
@@ -1031,9 +945,7 @@ final class SftpContext implements Context
         );
     }
 
-    /**
-     * @Then /^the known_hosts file has exactly one entry$/
-     */
+    #[Then('/^the known_hosts file has exactly one entry$/')]
     public function knownHostsFileHasExactlyOneEntry(): void
     {
         Assert::assertNotNull($this->knownHostsPath);
@@ -1046,9 +958,7 @@ final class SftpContext implements Context
         Assert::assertCount(1, $entryLines, 'expected exactly one sha1-fpr entry');
     }
 
-    /**
-     * @Then /^a known-hosts rejection is reported$/
-     */
+    #[Then('/^a known-hosts rejection is reported$/')]
     public function knownHostsRejectionReported(): void
     {
         Assert::assertInstanceOf(ConnectionException::class, $this->lastError);
@@ -1059,9 +969,7 @@ final class SftpContext implements Context
         );
     }
 
-    /**
-     * @Then /^a known-hosts mismatch is reported$/
-     */
+    #[Then('/^a known-hosts mismatch is reported$/')]
     public function knownHostsMismatchReported(): void
     {
         Assert::assertInstanceOf(ConnectionException::class, $this->lastError);
@@ -1072,9 +980,7 @@ final class SftpContext implements Context
         );
     }
 
-    /**
-     * @Then /^no remote partial file is left behind in "([^"]+)"$/
-     */
+    #[Then('/^no remote partial file is left behind in "([^"]+)"$/')]
     public function noRemotePartialLeft(string $dir): void
     {
         $entries = $this->requireClient()->getFileList($dir, includeDotEntries: true);
@@ -1089,9 +995,7 @@ final class SftpContext implements Context
         );
     }
 
-    /**
-     * @When /^I remove "([^"]+)"$/
-     */
+    #[When('/^I remove "([^"]+)"$/')]
     public function iRemove(string $remotePath): void
     {
         try {
@@ -1101,9 +1005,7 @@ final class SftpContext implements Context
         }
     }
 
-    /**
-     * @When /^I rename "([^"]+)" to "([^"]+)"$/
-     */
+    #[When('/^I rename "([^"]+)" to "([^"]+)"$/')]
     public function iRename(string $from, string $to): void
     {
         try {
@@ -1113,9 +1015,7 @@ final class SftpContext implements Context
         }
     }
 
-    /**
-     * @When /^I create directory "([^"]+)"$/
-     */
+    #[When('/^I create directory "([^"]+)"$/')]
     public function iCreateDirectory(string $path): void
     {
         try {
@@ -1125,9 +1025,7 @@ final class SftpContext implements Context
         }
     }
 
-    /**
-     * @When /^I create directory "([^"]+)" recursively$/
-     */
+    #[When('/^I create directory "([^"]+)" recursively$/')]
     public function iCreateDirectoryRecursive(string $path): void
     {
         try {
@@ -1137,9 +1035,7 @@ final class SftpContext implements Context
         }
     }
 
-    /**
-     * @When /^I scpUpload "([^"]+)" to "([^"]+)"$/
-     */
+    #[When('/^I scpUpload "([^"]+)" to "([^"]+)"$/')]
     public function iScpUpload(string $localName, string $remotePath): void
     {
         try {
@@ -1149,9 +1045,7 @@ final class SftpContext implements Context
         }
     }
 
-    /**
-     * @When /^I scpDownload "([^"]+)" to "([^"]+)"$/
-     */
+    #[When('/^I scpDownload "([^"]+)" to "([^"]+)"$/')]
     public function iScpDownload(string $remotePath, string $localName): void
     {
         try {
@@ -1164,9 +1058,7 @@ final class SftpContext implements Context
     /** Cache for the most recent `stat()` / `getFileList()` result. */
     private mixed $lastQueryResult = null;
 
-    /**
-     * @When /^I stat "([^"]+)"$/
-     */
+    #[When('/^I stat "([^"]+)"$/')]
     public function iStat(string $remotePath): void
     {
         try {
@@ -1176,9 +1068,7 @@ final class SftpContext implements Context
         }
     }
 
-    /**
-     * @When /^I getFileList "([^"]+)"$/
-     */
+    #[When('/^I getFileList "([^"]+)"$/')]
     public function iGetFileList(string $remotePath): void
     {
         try {
@@ -1188,9 +1078,7 @@ final class SftpContext implements Context
         }
     }
 
-    /**
-     * @When /^I getFileList "([^"]+)" with dot entries$/
-     */
+    #[When('/^I getFileList "([^"]+)" with dot entries$/')]
     public function iGetFileListWithDotEntries(string $remotePath): void
     {
         try {
@@ -1203,9 +1091,7 @@ final class SftpContext implements Context
         }
     }
 
-    /**
-     * @When /^I check fileExists for "([^"]+)"$/
-     */
+    #[When('/^I check fileExists for "([^"]+)"$/')]
     public function iCheckFileExists(string $remotePath): void
     {
         try {
@@ -1215,9 +1101,7 @@ final class SftpContext implements Context
         }
     }
 
-    /**
-     * @Then /^the stat result reports size (\d+)$/
-     */
+    #[Then('/^the stat result reports size (\d+)$/')]
     public function statResultReportsSize(int $expected): void
     {
         Assert::assertIsArray($this->lastQueryResult);
@@ -1225,9 +1109,7 @@ final class SftpContext implements Context
         Assert::assertSame($expected, $this->lastQueryResult['size']);
     }
 
-    /**
-     * @Then /^the file list contains exactly: (.+)$/
-     */
+    #[Then('/^the file list contains exactly: (.+)$/')]
     public function fileListContainsExactly(string $csv): void
     {
         Assert::assertIsArray($this->lastQueryResult);
@@ -1238,17 +1120,13 @@ final class SftpContext implements Context
         Assert::assertSame($expected, $actual);
     }
 
-    /**
-     * @Then /^fileExists returns (true|false)$/
-     */
+    #[Then('/^fileExists returns (true|false)$/')]
     public function fileExistsReturns(string $expected): void
     {
         Assert::assertSame($expected === 'true', $this->lastQueryResult);
     }
 
-    /**
-     * @When /^I resume upload of "([^"]+)" to "([^"]+)" with explicit offset (\d+)$/
-     */
+    #[When('/^I resume upload of "([^"]+)" to "([^"]+)" with explicit offset (\d+)$/')]
     public function iResumeUploadWithOffset(string $localName, string $remotePath, int $offset): void
     {
         try {
@@ -1262,9 +1140,7 @@ final class SftpContext implements Context
         }
     }
 
-    /**
-     * @When /^I install a ShellSumRemoteHasher$/
-     */
+    #[When('/^I install a ShellSumRemoteHasher$/')]
     public function installShellSumRemoteHasher(): void
     {
         $this->requireClient()->setRemoteHasher(
@@ -1272,9 +1148,7 @@ final class SftpContext implements Context
         );
     }
 
-    /**
-     * @When /^I connect with multi-factor authentication$/
-     */
+    #[When('/^I connect with multi-factor authentication$/')]
     public function iConnectWithBoth(): void
     {
         // atmoz/sftp is configured with both a pubkey AND a password for
@@ -1298,9 +1172,7 @@ final class SftpContext implements Context
         }
     }
 
-    /**
-     * @When /^I remove directory "([^"]+)"$/
-     */
+    #[When('/^I remove directory "([^"]+)"$/')]
     public function iRemoveDirectory(string $path): void
     {
         try {
@@ -1310,9 +1182,7 @@ final class SftpContext implements Context
         }
     }
 
-    /**
-     * @Then /^the connection succeeds$/
-     */
+    #[Then('/^the connection succeeds$/')]
     public function connectionSucceeds(): void
     {
         Assert::assertNull(
@@ -1321,26 +1191,20 @@ final class SftpContext implements Context
         );
     }
 
-    /**
-     * @Then /^authentication is rejected$/
-     */
+    #[Then('/^authentication is rejected$/')]
     public function authenticationIsRejected(): void
     {
         Assert::assertInstanceOf(AuthenticationException::class, $this->lastError);
     }
 
-    /**
-     * @Then /^the connection fails with a fingerprint mismatch$/
-     */
+    #[Then('/^the connection fails with a fingerprint mismatch$/')]
     public function fingerprintMismatch(): void
     {
         Assert::assertInstanceOf(ConnectionException::class, $this->lastError);
         Assert::assertStringContainsString('fingerprint mismatch', $this->lastError->getMessage());
     }
 
-    /**
-     * @Then /^the remote file "([^"]+)" contains "([^"]*)"$/
-     */
+    #[Then('/^the remote file "([^"]+)" contains "([^"]*)"$/')]
     public function remoteFileContains(string $remotePath, string $expected): void
     {
         $local = $this->tmpDir . '/__verify_' . bin2hex(random_bytes(3));
@@ -1348,49 +1212,37 @@ final class SftpContext implements Context
         Assert::assertSame($expected, file_get_contents($local));
     }
 
-    /**
-     * @Then /^the local file "([^"]+)" contains "([^"]*)"$/
-     */
+    #[Then('/^the local file "([^"]+)" contains "([^"]*)"$/')]
     public function localFileContains(string $name, string $expected): void
     {
         Assert::assertSame($expected, file_get_contents($this->tmpDir . '/' . $name));
     }
 
-    /**
-     * @Then /^the remote file "([^"]+)" exists$/
-     */
+    #[Then('/^the remote file "([^"]+)" exists$/')]
     public function remoteFileExists(string $remotePath): void
     {
         Assert::assertTrue($this->requireClient()->fileExists($remotePath));
     }
 
-    /**
-     * @Then /^the remote file "([^"]+)" does not exist$/
-     */
+    #[Then('/^the remote file "([^"]+)" does not exist$/')]
     public function remoteFileDoesNotExist(string $remotePath): void
     {
         Assert::assertFalse($this->requireClient()->fileExists($remotePath));
     }
 
-    /**
-     * @Then /^a transfer error is reported$/
-     */
+    #[Then('/^a transfer error is reported$/')]
     public function transferErrorReported(): void
     {
         Assert::assertInstanceOf(TransferException::class, $this->lastError);
     }
 
-    /**
-     * @Then /^a filesystem error is reported$/
-     */
+    #[Then('/^a filesystem error is reported$/')]
     public function filesystemErrorReported(): void
     {
         Assert::assertInstanceOf(RemoteFilesystemException::class, $this->lastError);
     }
 
-    /**
-     * @Then /^a path validation error is reported$/
-     */
+    #[Then('/^a path validation error is reported$/')]
     public function pathValidationErrorReported(): void
     {
         Assert::assertInstanceOf(InvalidPathException::class, $this->lastError);
@@ -1400,9 +1252,7 @@ final class SftpContext implements Context
     // README example scenarios — see tests/functional/features/readme.feature
     // ───────────────────────────────────────────────────────────────────
 
-    /**
-     * @Given /^a StaticCredentialsLoader carrying the fixture credentials$/
-     */
+    #[Given('/^a StaticCredentialsLoader carrying the fixture credentials$/')]
     public function staticCredentialsLoaderCarryingFixture(): void
     {
         $loader = new StaticCredentialsLoader(Credentials::withPassword($this->user, $this->pass));
@@ -1410,9 +1260,7 @@ final class SftpContext implements Context
         $this->client->setCredentialsLoader($loader);
     }
 
-    /**
-     * @When /^I connect through the loader with no explicit credentials$/
-     */
+    #[When('/^I connect through the loader with no explicit credentials$/')]
     public function connectThroughLoaderWithoutCredentials(): void
     {
         try {
@@ -1422,9 +1270,7 @@ final class SftpContext implements Context
         }
     }
 
-    /**
-     * @Then /^the client's getCredentials returns the loader-resolved value$/
-     */
+    #[Then('/^the client\'s getCredentials returns the loader-resolved value$/')]
     public function clientCredentialsResolvedByLoader(): void
     {
         $resolved = $this->requireClient()->getCredentials();
@@ -1432,25 +1278,19 @@ final class SftpContext implements Context
         Assert::assertSame($this->user, $resolved->getUsername());
     }
 
-    /**
-     * @Given /^the client has file-size verification enabled$/
-     */
+    #[Given('/^the client has file-size verification enabled$/')]
     public function clientHasFileSizeVerification(): void
     {
         $this->requireClient()->enableFileSizeVerification();
     }
 
-    /**
-     * @Given /^the client has atomic uploads disabled$/
-     */
+    #[Given('/^the client has atomic uploads disabled$/')]
     public function clientHasAtomicUploadsDisabled(): void
     {
         $this->requireClient()->disableAtomicUploads();
     }
 
-    /**
-     * @When /^I walk "([^"]+)"$/
-     */
+    #[When('/^I walk "([^"]+)"$/')]
     public function iWalk(string $remoteDir): void
     {
         $entries = [];
@@ -1460,18 +1300,14 @@ final class SftpContext implements Context
         $this->lastWalk = $entries;
     }
 
-    /**
-     * @Then /^the walk yielded (\d+) entries$/
-     */
+    #[Then('/^the walk yielded (\d+) entries$/')]
     public function walkYieldedNEntries(int $expected): void
     {
         Assert::assertNotNull($this->lastWalk, 'no walk step ran before this assertion');
         Assert::assertCount($expected, $this->lastWalk);
     }
 
-    /**
-     * @Then /^every directory in the walk appears after its children$/
-     */
+    #[Then('/^every directory in the walk appears after its children$/')]
     public function walkPostOrderInvariant(): void
     {
         Assert::assertNotNull($this->lastWalk);
@@ -1501,49 +1337,37 @@ final class SftpContext implements Context
         }
     }
 
-    /**
-     * @Given /^I install a NoRetryPolicy on the client$/
-     */
+    #[Given('/^I install a NoRetryPolicy on the client$/')]
     public function installNoRetryPolicy(): void
     {
         $this->requireClient()->setRetryPolicy(new NoRetryPolicy());
     }
 
-    /**
-     * @Then /^ping returns true$/
-     */
+    #[Then('/^ping returns true$/')]
     public function pingReturnsTrue(): void
     {
         Assert::assertTrue($this->requireClient()->ping());
     }
 
-    /**
-     * @Then /^ping returns false$/
-     */
+    #[Then('/^ping returns false$/')]
     public function pingReturnsFalse(): void
     {
         Assert::assertFalse($this->requireClient()->ping());
     }
 
-    /**
-     * @When /^I close the client$/
-     */
+    #[When('/^I close the client$/')]
     public function iCloseTheClient(): void
     {
         $this->requireClient()->close();
     }
 
-    /**
-     * @Given /^the client uses a RedownloadRemoteHasher with algorithm "([^"]+)"$/
-     */
+    #[Given('/^the client uses a RedownloadRemoteHasher with algorithm "([^"]+)"$/')]
     public function clientUsesRedownloadHasher(string $algorithm): void
     {
         $this->requireClient()->setRemoteHasher(new RedownloadRemoteHasher($algorithm));
     }
 
-    /**
-     * @Given /^the client has remote prefix "([^"]+)"$/
-     */
+    #[Given('/^the client has remote prefix "([^"]+)"$/')]
     public function clientHasRemotePrefix(string $prefix): void
     {
         $this->requireClient()->setRemotePrefix($prefix);
@@ -1557,26 +1381,20 @@ final class SftpContext implements Context
         }
     }
 
-    /**
-     * @Given /^the client has a capturing logger$/
-     */
+    #[Given('/^the client has a capturing logger$/')]
     public function clientHasCapturingLogger(): void
     {
         $this->capturingLogger = new CapturingLogger();
         $this->requireClient()->setLogger($this->capturingLogger);
     }
 
-    /**
-     * @Given /^the client log context is "([^"]+)" = "([^"]+)" and "([^"]+)" = "([^"]+)"$/
-     */
+    #[Given('/^the client log context is "([^"]+)" = "([^"]+)" and "([^"]+)" = "([^"]+)"$/')]
     public function clientLogContextTwoKeys(string $k1, string $v1, string $k2, string $v2): void
     {
         $this->requireClient()->setLogContext([$k1 => $v1, $k2 => $v2]);
     }
 
-    /**
-     * @Then /^every captured log record carries context key "([^"]+)" with value "([^"]+)"$/
-     */
+    #[Then('/^every captured log record carries context key "([^"]+)" with value "([^"]+)"$/')]
     public function everyCapturedLogRecordCarriesKeyWithValue(string $key, string $value): void
     {
         Assert::assertNotNull($this->capturingLogger);
@@ -1595,9 +1413,7 @@ final class SftpContext implements Context
         }
     }
 
-    /**
-     * @Then /^every captured log record carries a "([^"]+)" key$/
-     */
+    #[Then('/^every captured log record carries a "([^"]+)" key$/')]
     public function everyCapturedLogRecordCarriesKey(string $key): void
     {
         Assert::assertNotNull($this->capturingLogger);
@@ -1607,9 +1423,7 @@ final class SftpContext implements Context
         }
     }
 
-    /**
-     * @Then /^a single SshException was thrown$/
-     */
+    #[Then('/^a single SshException was thrown$/')]
     public function singleSshExceptionThrown(): void
     {
         Assert::assertInstanceOf(
