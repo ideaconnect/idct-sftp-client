@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.0.2 — 2026-10-23
+
+Release-tooling fix only: no library code changes since 1.0.1.
+
+### Testing & CI
+
+* Release workflow: the QA job passes PHPUnit an absolute
+  `--coverage-clover` path, as `ci.yml` already did. The relative path
+  resolved inside `scratch/` (the test bootstrap chdirs there), so the
+  coverage gate failed with "Clover file not found" and the v1.0.1
+  GitHub Release had to be published by hand.
+
 ## 1.0.1 — 2026-10-23
 
 First published 1.x release. 1.0.0 was prepared but never tagged, so

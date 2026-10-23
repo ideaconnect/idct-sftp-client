@@ -42,8 +42,13 @@ jobs:
       - name: PHPUnit (with 100% line coverage gate)
         env:
           XDEBUG_MODE: coverage
+        # Absolute --coverage-clover path for the same reason as in
+        # ci.yml: tests/bootstrap.php chdirs into scratch/, so a relative
+        # path would write scratch/build/coverage/clover.xml and the gate
+        # below would report "Clover file not found".
         run: |
-          vendor/bin/phpunit --coverage-clover=build/coverage/clover.xml
+          mkdir -p build/coverage
+          vendor/bin/phpunit --coverage-clover="${GITHUB_WORKSPACE}/build/coverage/clover.xml"
           php tests/bin/check-coverage.php build/coverage/clover.xml 100
       - name: Composer audit
         run: composer audit --no-dev --locked
