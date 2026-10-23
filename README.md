@@ -304,7 +304,7 @@ bodies, in-memory buffers — use the stream variants:
 
 ```php
 // Upload from any PHP stream resource.
-$stream = fopen('http://my-minio:9000/bucket/key', 'rb');
+$stream = fopen('http://my-s3-server:9000/bucket/key', 'rb');
 $client->uploadStream($stream, '/remote/from-s3.bin');
 fclose($stream);
 
