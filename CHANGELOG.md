@@ -2,8 +2,14 @@
 
 ## 1.0.1 — 2026-10-23
 
-Maintenance release: no library code changes. It brings CI back to green
-and refreshes the toolchain.
+First published 1.x release. 1.0.0 was prepared but never tagged, so
+1.0.1 is the first release that ships it. Coming from 0.4.x,
+read the [1.0.0 notes](https://github.com/ideaconnect/idct-sftp-client/blob/master/CHANGELOG.md#100--2026-05-20)
+and [Upgrading from 0.x](https://github.com/ideaconnect/idct-sftp-client/blob/master/README.md#upgrading-from-0x)
+first: 1.0 is a ground-up rewrite with breaking changes.
+
+Over 1.0.0 itself there are no library code changes. This release
+brings CI back to green and refreshes the toolchain.
 
 ### Testing & CI
 
@@ -17,14 +23,27 @@ and refreshes the toolchain.
   `minio-init` → `s3-init`, the seeded payload is now
   `streamed-from-s3-payload`, and example 07 reads `S3_URL` (was
   `MINIO_URL`).
+* Functional suite moved to Behat 4 (`behat/behat ^4.0`; 3.x is no
+  longer supported). Behat 4 reads only PHP configuration, so
+  `behat.yml` is replaced by `behat.php`; the step definitions in
+  `SftpContext` use `#[Given]` / `#[When]` / `#[Then]` attributes
+  instead of doc-comment annotations; and a `BeforeSuite` hook builds
+  PHPUnit's configuration so failing `Assert::` calls report their
+  message (behat/phpunit-assertions-extension 1.0.0 cannot boot on
+  Behat 4.0.0 yet).
 * toxiproxy fixture image 2.9.0 → 2.13.0.
 * The SAST (Psalm taint analysis) workflow can also be started by hand
   (`workflow_dispatch`), like Soak already could.
+* Release workflow: tags are now verified against the maintainer's
+  public key, committed as `.github/release-signing-key.asc`. Before,
+  the runner's keyring was empty, so the GPG check could never pass. The
+  workflow also re-fetches the pushed tag before verifying it, so it
+  checks the signed annotated tag object rather than a lightweight ref.
 
 ### Dependencies
 
 * Dev-dependency floors raised to the current releases
-  (`composer bump --dev-only`): behat ^3.34, php-cs-fixer ^3.95.27,
+  (`composer bump --dev-only`): behat ^4.0 (see above), php-cs-fixer ^3.95.27,
   eris ^1.3, infection ^0.29.14, phpstan ^2.3.1, phpstan-phpunit ^2.1.1,
   phpstan-strict-rules ^2.1, phpunit ^11.5.57 || ^12.0, rector ^2.7.
   Runtime requirements are unchanged (`psr/log ^3.0` already admits the

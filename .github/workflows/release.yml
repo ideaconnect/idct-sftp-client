@@ -9,9 +9,10 @@ name: Release
 #
 # GPG signing of the tag is intentionally NOT in this workflow — it
 # happens at `git tag -s`-time on the maintainer's local machine
-# (GPG keys can't ship in the repo). The workflow VERIFIES the tag is
-# GPG-signed and rejects unsigned tags so we don't accidentally publish
-# an unsigned release.
+# (private keys can't ship in the repo). The workflow VERIFIES the tag
+# against the public key(s) in `.github/release-signing-key.asc` and
+# rejects unsigned tags so we don't accidentally publish an unsigned
+# release. Rotating the signing key means replacing that file.
 #
 # Packagist auto-update: happens by default.
 
@@ -61,6 +62,11 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+      - name: Import release signing key
+        # The runner's keyring starts empty, so without this `git tag -v`
+        # reports "No public key" for every tag. Only keys in this file
+        # can produce a "Good signature" below.
+        run: gpg --batch --import .github/release-signing-key.asc
       - name: Verify tag is GPG-signed
         # Refuses to proceed unless the pushed tag carries a valid GPG
         # signature. The signing key has to be on the maintainer's
@@ -68,6 +74,10 @@ jobs:
         # unsigned dev tag, but for production it stays.
         run: |
           TAG="${GITHUB_REF#refs/tags/}"
+          # Re-fetch the tag so refs/tags/$TAG is the annotated tag object
+          # (which carries the signature), not a lightweight ref to the
+          # commit that checkout may have written in its place.
+          git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
           if ! git tag -v "$TAG" 2>&1 | grep -q "Good signature"; then
             echo "Tag $TAG is NOT GPG-signed (or signature invalid). Refusing to publish."
             echo "Sign locally with: git tag -s $TAG -m '...' && git push --tags"
